@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>サンプルフィードバックExcel自動生成</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<style>
+  :root {
+    --accent: #2f6f4f;
+    --accent-dark: #1f4d36;
+    --bg: #f7f6f2;
+    --card: #ffffff;
+    --border: #e2ded4;
+    --text: #2b2b28;
+    --muted: #7a766c;
+    --danger: #c0392b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 40px 16px 80px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  h1 {
+    font-size: 24px;
+    margin-bottom: 4px;
+  }
+  p.lead {
+    color: var(--muted);
+    margin-top: 0;
+    margin-bottom: 32px;
+    line-height: 1.7;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    margin-bottom: 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+  }
+  .card h2 {
+    font-size: 16px;
+    margin-top: 0;
+    margin-bottom: 16px;
+    color: var(--accent-dark);
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: var(--text);
+  }
+  .hint {
+    font-size: 12px;
+    color: var(--muted);
+    margin: -2px 0 10px;
+  }
+  .field { margin-bottom: 20px; }
+  .field:last-child { margin-bottom: 0; }
+  input[type="file"] {
+    width: 100%;
+    padding: 10px;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    background: #fbfaf7;
+    font-size: 13px;
+  }
+  input[type="text"] {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+  }
+  .row2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  button#generateBtn {
+    width: 100%;
+    padding: 14px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  button#generateBtn:hover { background: var(--accent-dark); }
+  button#generateBtn:disabled { background: #b9b6ab; cursor: not-allowed; }
+  #status {
+    margin-top: 16px;
+    font-size: 13px;
+    line-height: 1.8;
+    white-space: pre-wrap;
+  }
+  #status.ok { color: var(--accent-dark); }
+  #status.err { color: var(--danger); }
+  #summary {
+    display: none;
+    margin-top: 16px;
+    padding: 16px;
+    background: #f1f7f3;
+    border: 1px solid #cfe6d8;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.9;
+  }
+  #summary b { color: var(--accent-dark); }
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 32px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>サンプルフィードバックExcel自動生成</h1>
+  <p class="lead">
+    Bカートの「サンプル評価回収CSV」と「受注CSV」をアップロードすると、
+    メーカー別のサンプルフィードバックExcelをブラウザ内で生成してダウンロードできます。
+    ファイルはサーバーに送信されず、すべてこの画面の中だけで処理されます。
+  </p>
+
+  <div class="card">
+    <h2>① CSVファイル</h2>
+    <div class="field">
+      <label for="evalCsv">サンプル評価回収CSV</label>
+      <div class="hint">会社名・納品日・商品名・サンプル評価結果などを含むCSV</div>
+      <input type="file" id="evalCsv" accept=".csv">
+    </div>
+    <div class="field">
+      <label for="orderCsv">Bカート受注CSV</label>
+      <div class="hint">受注番号・業態・配送先都道府県・セット名などを含む全項目版CSV</div>
+      <input type="file" id="orderCsv" accept=".csv">
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>② メーカー情報</h2>
+    <div class="row2">
+      <div class="field">
+        <label for="makerCode">メーカーコード（任意）</label>
+        <div class="hint">商品名冒頭の [141] のような数字。複数はカンマ区切り</div>
+        <input type="text" id="makerCode" placeholder="例: 141">
+      </div>
+      <div class="field">
+        <label for="makerName">メーカー名（任意）</label>
+        <div class="hint">未入力ならコード表から自動解決します</div>
+        <input type="text" id="makerName" placeholder="例: 141東京堂">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <button id="generateBtn">Excelを生成してダウンロード</button>
+    <div id="status"></div>
+    <div id="summary"></div>
+  </div>
+
+  <footer>sample-feedback-excel &middot; ブラウザ完結・データはどこにも送信されません</footer>
+</div>
+
+<script>
+const EXCLUDE_COMPANY_KEYWORDS = ["ナゴミヤ", "なごみや"];
+
+const HEADER_KEYWORDS = {
+  "納品日": ["納品日"],
+  "業態": ["業態"],
+  "会社名": ["会社名"],
+  "都道府県": ["配送先 都道府県", "配送先都道府県", "都道府県"],
+  "商品名": ["商品名"],
+  "セット名": ["セット名"],
+  "受注番号": ["受注番号"],
+  "サンプル用途": ["サンプル用途"],
+  "評価結果": ["サンプル評価結果"],
+  "採用数": ["評価都合／採用数", "評価都合/採用数"],
+};
+
+const FONT_NAME = "Arial";
+const GREY_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9D9D9" } };
+const GREEN_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2EFDA" } };
+const THIN_GREY = { style: "thin", color: { argb: "FFBFBFBF" } };
+const BORDER_ALL = { top: THIN_GREY, bottom: THIN_GREY, left: THIN_GREY, right: THIN_GREY };
+const COLUMN_WIDTHS = { A: 14.6, B: 15.1, C: 31.6, D: 11.9, E: 37.0, F: 35.2, G: 71.4, H: 14.0 };
+
+function setStatus(msg, kind) {
+  const el = document.getElementById("status");
+  el.textContent = msg;
+  el.className = kind || "";
+}
+
+function findColumn(headers, keywordLists) {
+  for (const kw of keywordLists) {
+    for (const h of headers) {
+      if (String(h).includes(kw)) return h;
+    }
+  }
+  return null;
+}
+
+function extractMakerCode(productName) {
+  const m = String(productName || "").match(/^\s*\[(\d+)\]/);
+  return m ? m[1] : null;
+}
+
+function parseDateJP(value) {
+  if (!value) return null;
+  const v = String(value).trim();
+  let m = v.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (m) return new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3]));
+  return null;
+}
+
+function formatDateJP(d) {
+  if (!d) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}/${m}/${day}`;
+}
+
+function countKeyword(text, kw) {
+  if (!text) return 0;
+  return String(text).split(kw).length - 1;
+}
+
+// 文字コード自動判定してテキスト化 (cp932/shift_jis or utf-8)
+async function decodeFile(file) {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+
+  function tryDecode(label) {
+    try {
+      const decoder = new TextDecoder(label, { fatal: false });
+      const text = decoder.decode(bytes);
+      const replCount = (text.match(/\uFFFD/g) || []).length;
+      return { text, replCount };
+    } catch (e) {
+      return { text: null, replCount: Infinity };
+    }
+  }
+
+  const sjis = tryDecode("shift_jis");
+  const utf8 = tryDecode("utf-8");
+  if (utf8.text !== null && utf8.replCount === 0) return utf8.text;
+  if (sjis.text !== null && sjis.replCount <= utf8.replCount) return sjis.text;
+  return utf8.text !== null ? utf8.text : sjis.text;
+}
+
+function parseCsvText(text) {
+  const result = Papa.parse(text, { header: true, skipEmptyLines: true });
+  return { rows: result.data, headers: result.meta.fields || [] };
+}
+
+async function loadMakerCodeMap() {
+  try {
+    const res = await fetch("data/maker_codes.csv");
+    if (!res.ok) return {};
+    const text = await res.text();
+    const { rows } = parseCsvText(text);
+    const map = {};
+    for (const r of rows) {
+      const keys = Object.keys(r);
+      if (keys.length < 2) continue;
+      const code = String(r[keys[0]]).trim();
+      const name = String(r[keys[1]]).trim();
+      if (code) map[code] = name;
+    }
+    return map;
+  } catch (e) {
+    return {};
+  }
+}
+
+function setCell(ws, rowIdx, colIdx, value, opts) {
+  const cell = ws.getCell(rowIdx, colIdx);
+  cell.value = value;
+  opts = opts || {};
+  cell.font = Object.assign({ name: FONT_NAME, size: 11 }, opts.font || {});
+  if (opts.fill) cell.fill = opts.fill;
+  cell.alignment = Object.assign({ vertical: "center", wrapText: true }, opts.alignment || {});
+  if (opts.border !== false) cell.border = BORDER_ALL;
+  if (opts.numFmt) cell.numFmt = opts.numFmt;
+  return cell;
+}
+
+async function generate() {
+  const evalFile = document.getElementById("evalCsv").files[0];
+  const orderFile = document.getElementById("orderCsv").files[0];
+  const makerCodeStr = document.getElementById("makerCode").value.trim();
+  let makerName = document.getElementById("makerName").value.trim();
+
+  document.getElementById("summary").style.display = "none";
+
+  if (!evalFile || !orderFile) {
+    setStatus("サンプル評価回収CSVと受注CSVの両方を選択してください。", "err");
+    return;
+  }
+
+  const btn = document.getElementById("generateBtn");
+  btn.disabled = true;
+  setStatus("CSVを読み込み中...", "");
+
+  try {
+    const [evalText, orderText] = await Promise.all([decodeFile(evalFile), decodeFile(orderFile)]);
+    const evalParsed = parseCsvText(evalText);
+    const orderParsed = parseCsvText(orderText);
+
+    const oh = orderParsed.headers, eh = evalParsed.headers;
+    const o_date = findColumn(oh, HEADER_KEYWORDS["納品日"]);
+    const o_type = findColumn(oh, HEADER_KEYWORDS["業態"]);
+    const o_company = findColumn(oh, HEADER_KEYWORDS["会社名"]);
+    const o_pref = findColumn(oh, HEADER_KEYWORDS["都道府県"]);
+    const o_product = findColumn(oh, HEADER_KEYWORDS["商品名"]);
+    const o_set = findColumn(oh, HEADER_KEYWORDS["セット名"]);
+    const o_orderno = findColumn(oh, HEADER_KEYWORDS["受注番号"]);
+
+    const e_date = findColumn(eh, HEADER_KEYWORDS["納品日"]);
+    const e_company = findColumn(eh, HEADER_KEYWORDS["会社名"]);
+    const e_product = findColumn(eh, HEADER_KEYWORDS["商品名"]);
+    const e_orderno = findColumn(eh, HEADER_KEYWORDS["受注番号"]);
+    const e_usage = findColumn(eh, HEADER_KEYWORDS["サンプル用途"]);
+    const e_result = findColumn(eh, HEADER_KEYWORDS["評価結果"]);
+    const e_adopt = findColumn(eh, HEADER_KEYWORDS["採用数"]);
+
+    const missing = [];
+    if (!o_date) missing.push("受注CSV:納品日");
+    if (!o_company) missing.push("受注CSV:会社名");
+    if (!o_product) missing.push("受注CSV:商品名");
+    if (!o_set) missing.push("受注CSV:セット名");
+    if (!o_orderno) missing.push("受注CSV:受注番号");
+    if (!e_company) missing.push("評価CSV:会社名");
+    if (!e_product) missing.push("評価CSV:商品名");
+    if (!e_orderno) missing.push("評価CSV:受注番号");
+    if (missing.length) {
+      throw new Error("以下の列が見つかりませんでした: " + missing.join(", "));
+    }
+
+    if (!makerName) {
+      if (!makerCodeStr) throw new Error("メーカー名かメーカーコードのどちらかを入力してください。");
+      const codeMap = await loadMakerCodeMap();
+      const firstCode = makerCodeStr.split(",")[0].trim();
+      const resolved = codeMap[firstCode];
+      if (!resolved) throw new Error(`メーカーコード ${firstCode} が data/maker_codes.csv に見つかりません。メーカー名を直接入力してください。`);
+      makerName = `${firstCode}${resolved}`;
+    }
+
+    setStatus("データを集計中...", "");
+
+    // 受注CSV: サンプル判定・自社除外
+    let orderRows = orderParsed.rows.filter(r => {
+      const c = String(r[o_company] || "");
+      return !EXCLUDE_COMPANY_KEYWORDS.some(kw => c.includes(kw));
+    });
+    orderRows.forEach(r => { r.__isSample = String(r[o_set] || "").includes("サンプル"); });
+
+    // 受注番号+商品名 のルックアップ
+    const lookup = new Map();
+    for (const r of orderRows) {
+      const key = `${r[o_orderno]}||${r[o_product]}`;
+      if (!lookup.has(key)) {
+        lookup.set(key, {
+          業態: r[o_type] || "",
+          都道府県: r[o_pref] || "",
+          セット名: r[o_set] || "",
+        });
+      }
+    }
+
+    const codes = makerCodeStr ? makerCodeStr.split(",").map(c => c.trim()).filter(Boolean) : null;
+    if (codes) {
+      orderRows = orderRows.filter(r => codes.includes(extractMakerCode(r[o_product])));
+    }
+
+    // 評価CSV: 自社除外 → 結合 → サンプル行のみ → メーカーコード絞り込み
+    let df = evalParsed.rows.filter(r => {
+      const c = String(r[e_company] || "");
+      return !EXCLUDE_COMPANY_KEYWORDS.some(kw => c.includes(kw));
+    }).map(r => {
+      const key = `${r[e_orderno]}||${r[e_product]}`;
+      const info = lookup.get(key) || { 業態: "", 都道府県: "", セット名: "" };
+      return Object.assign({}, r, {
+        __業態: info.業態,
+        __都道府県: info.都道府県,
+        __セット名: info.セット名,
+        __company: String(r[e_company] || ""),
+        __dateParsed: e_date ? parseDateJP(r[e_date]) : null,
+      });
+    }).filter(r => String(r.__セット名 || "").includes("サンプル"));
+
+    if (codes) {
+      df = df.filter(r => codes.includes(extractMakerCode(r[e_product])));
+    }
+
+    if (df.length === 0) {
+      throw new Error("絞り込み後、評価データが0件でした。メーカーコードを確認してください。");
+    }
+
+    const companiesWithOrder = new Set(
+      orderRows.filter(r => !r.__isSample).map(r => String(r[o_company] || ""))
+    );
+
+    const providedCompanies = Array.from(new Set(df.map(r => r.__company))).sort();
+    const nProvided = providedCompanies.length;
+    const nConverted = providedCompanies.filter(c => companiesWithOrder.has(c)).length;
+    const rate = nProvided ? nConverted / nProvided : 0;
+
+    const allDates = df.map(r => r.__dateParsed).filter(Boolean);
+    let periodStr = "";
+    if (allDates.length) {
+      const minD = new Date(Math.min(...allDates.map(d => d.getTime())));
+      const maxD = new Date(Math.max(...allDates.map(d => d.getTime())));
+      periodStr = `${formatDateJP(minD)}〜${formatDateJP(maxD)}`;
+    }
+
+    // グループ化 (会社名 + 納品日)
+    df.sort((a, b) => {
+      if (a.__company !== b.__company) return a.__company < b.__company ? -1 : 1;
+      const ad = a.__dateParsed ? a.__dateParsed.getTime() : Infinity;
+      const bd = b.__dateParsed ? b.__dateParsed.getTime() : Infinity;
+      return ad - bd;
+    });
+
+    const groups = [];
+    let curKey = null, curGroup = null;
+    for (const r of df) {
+      const key = r.__company + "||" + (e_date ? r[e_date] : "");
+      if (key !== curKey) {
+        curGroup = { company: r.__company, dateVal: e_date ? r[e_date] : "", rows: [] };
+        groups.push(curGroup);
+        curKey = key;
+      }
+      curGroup.rows.push(r);
+    }
+
+    // 業態別分析
+    const companyType = {};
+    for (const r of df) {
+      if (!companyType[r.__company] && r.__業態) companyType[r.__company] = r.__業態;
+    }
+    const bizStats = {};
+    for (const c of providedCompanies) {
+      const t = companyType[c] || "(不明)";
+      if (!bizStats[t]) bizStats[t] = { 提供: 0, 転換: 0, OK: 0, NG: 0, 検討中: 0 };
+      bizStats[t].提供 += 1;
+      if (companiesWithOrder.has(c)) bizStats[t].転換 += 1;
+    }
+    for (const r of df) {
+      const t = companyType[r.__company] || "(不明)";
+      const text = e_result ? String(r[e_result] || "") : "";
+      bizStats[t].OK += countKeyword(text, "OK");
+      bizStats[t].NG += countKeyword(text, "NG");
+      bizStats[t].検討中 += countKeyword(text, "検討中");
+    }
+
+    setStatus("Excelを生成中...", "");
+
+    // ---------------- Excel生成 ----------------
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("サンプルフィードバック");
+
+    setCell(ws, 1, 1, `${makerName}様サンプルフィードバック`, { font: { bold: true, size: 18 }, border: false, alignment: { wrapText: false, vertical: "bottom" } });
+    setCell(ws, 2, 1, `サンプル提供社数：${nProvided}社`, { border: false, alignment: { wrapText: false } });
+    setCell(ws, 3, 1, `注文転換社数：${nConverted}社`, { border: false, alignment: { wrapText: false } });
+    setCell(ws, 4, 1, `注文転換率：${(rate * 100).toFixed(1)}%`, { font: { bold: true, color: { argb: "FFFF0000" } }, border: false, alignment: { wrapText: false } });
+    setCell(ws, 6, 1, periodStr, { border: false, alignment: { wrapText: false } });
+    setCell(ws, 6, 8, "更新日時：なごみや太田", { border: false, alignment: { wrapText: false, horizontal: "right" } });
+
+    const headers = ["納品日", "業態", "会社名", "配送先都道府県", "商品名", "サンプル用途", "サンプル評価結果", "注文有無"];
+    const headerRow = 7;
+    headers.forEach((h, i) => {
+      setCell(ws, headerRow, i + 1, h, { font: { bold: true }, fill: GREY_FILL, alignment: { horizontal: "center", wrapText: true } });
+    });
+
+    let rowPtr = headerRow + 1;
+    for (const g of groups) {
+      const products = g.rows.map(r => r[e_product]);
+      const nRows = Math.max(products.length, 1);
+      const startRow = rowPtr;
+      const endRow = rowPtr + nRows - 1;
+
+      const dParsed = e_date ? parseDateJP(g.dateVal) : null;
+      const dateDisplay = dParsed ? formatDateJP(dParsed) : g.dateVal;
+
+      const hasOrder = companiesWithOrder.has(g.company);
+      const orderText = hasOrder ? "✅ 注文あり" : "－ なし";
+
+      const first = g.rows[0];
+      const resultText = e_result ? String(first[e_result] || "").trim() : "";
+      const adoptText = e_adopt ? String(first[e_adopt] || "").trim() : "";
+      let gValue;
+      if (adoptText && resultText) gValue = `評価都合／採用数：${adoptText}\n${resultText}`;
+      else gValue = resultText || adoptText;
+
+      const mergedValues = {
+        A: dateDisplay, B: first.__業態 || "", C: g.company, D: first.__都道府県 || "",
+        F: e_usage ? String(first[e_usage] || "").trim() : "", G: gValue, H: orderText,
+      };
+
+      const colIndexOf = { A: 1, B: 2, C: 3, D: 4, F: 6, G: 7, H: 8 };
+      for (const [letter, value] of Object.entries(mergedValues)) {
+        const colIdx = colIndexOf[letter];
+        const opts = { alignment: { vertical: "center", wrapText: true } };
+        if (letter === "H" && hasOrder) {
+          opts.font = { bold: true, color: { argb: "FF375623" } };
+          opts.fill = GREEN_FILL;
+        } else if (letter === "H") {
+          opts.font = { color: { argb: "FF999999" } };
+        }
+        setCell(ws, startRow, colIdx, value, opts);
+        if (endRow > startRow) {
+          ws.mergeCells(startRow, colIdx, endRow, colIdx);
+        }
+        for (let r = startRow; r <= endRow; r++) {
+          ws.getCell(r, colIdx).border = BORDER_ALL;
+        }
+      }
+
+      products.forEach((p, offset) => {
+        const r = startRow + offset;
+        setCell(ws, r, 5, p, {});
+      });
+
+      rowPtr = endRow + 1;
+    }
+
+    Object.entries(COLUMN_WIDTHS).forEach(([col, width]) => {
+      ws.getColumn(col).width = width;
+    });
+
+    // シート2: 業態別分析
+    const ws2 = wb.addWorksheet("業態別分析");
+    const headers2 = ["業態", "提供社数", "転換社数", "転換率", "OK件数(概算)", "NG件数(概算)", "検討中件数(概算)"];
+    headers2.forEach((h, i) => {
+      setCell(ws2, 1, i + 1, h, { font: { bold: true }, fill: GREY_FILL, alignment: { horizontal: "center", wrapText: true } });
+    });
+
+    const sortedBiz = Object.entries(bizStats).sort((a, b) => b[1].提供 - a[1].提供);
+    sortedBiz.forEach(([biz, s], idx) => {
+      const r = idx + 2;
+      const bizRate = s.提供 ? s.転換 / s.提供 : 0;
+      setCell(ws2, r, 1, biz, {});
+      setCell(ws2, r, 2, s.提供, {});
+      setCell(ws2, r, 3, s.転換, {});
+      setCell(ws2, r, 4, bizRate, { numFmt: "0.0%" });
+      setCell(ws2, r, 5, s.OK, {});
+      setCell(ws2, r, 6, s.NG, {});
+      setCell(ws2, r, 7, s.検討中, {});
+    });
+    ["A", "B", "C", "D", "E", "F", "G"].forEach((col, i) => {
+      ws2.getColumn(col).width = [16, 10, 10, 10, 12, 12, 14][i];
+    });
+    const noteRow = sortedBiz.length + 3;
+    ws2.getCell(noteRow, 1).value = "※OK/NG/検討中件数は評価コメント内の文字列を数えた概算値です（1コメントに複数商品分の評価が含まれる場合があります）";
+    ws2.getCell(noteRow, 1).font = { name: FONT_NAME, size: 9, italic: true };
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${makerName}様サンプルフィードバック.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    setStatus("完了しました。ダウンロードフォルダを確認してください。", "ok");
+    const summaryEl = document.getElementById("summary");
+    summaryEl.style.display = "block";
+    summaryEl.innerHTML = `
+      <div>タイトル：<b>${makerName}様サンプルフィードバック</b></div>
+      <div>サンプル提供社数：<b>${nProvided}社</b></div>
+      <div>注文転換社数：<b>${nConverted}社</b></div>
+      <div>注文転換率：<b>${(rate * 100).toFixed(1)}%</b></div>
+      <div>期間：<b>${periodStr}</b></div>
+    `;
+  } catch (err) {
+    console.error(err);
+    setStatus("エラー: " + err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("generateBtn").addEventListener("click", generate);
+</script>
+</body>
+</html>
