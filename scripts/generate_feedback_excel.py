@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Bカート「サンプル評価回収CSV」+「受注CSV」-> メーカー別サンプルフィードバックExcel 生成スクリプト (v2)
+Bカート受注CSV(1本) -> メーカー別サンプルフィードバックExcel 生成スクリプト (v3)
+
+受注CSVには 業態・配送先都道府県・商品名・会社名・納品日・受注番号・セット名・
+サンプル用途・サンプル評価結果・評価都合／採用数・受注数・小計 が全て含まれているため、
+このCSV1本だけで完結する。
 
 使い方:
-  python generate_feedback_excel_v2.py \
-      --eval-csv サンプル評価回収.csv \
-      --order-csv bcart_order.csv \
-      --maker-name "○○" \
-      --output "○○様サンプルフィードバック.xlsx"
+  python generate_feedback_excel.py --order-csv bcart_order.csv
 
---maker-code は省略可。複数コードはカンマ区切り: --maker-code "121,122"
+--maker-name / --maker-code / --output はすべて省略可。
+省略時はCSVの商品名からメーカーコードを自動検出し、data/maker_codes.csv から
+メーカー名を自動解決して「{コード}{会社名}様サンプルフィードバック.xlsx」を生成する。
 """
 import argparse
 import os
@@ -126,14 +128,12 @@ def detect_maker_code(series_of_product_names):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--eval-csv", required=True, help="サンプル評価回収CSV")
-    ap.add_argument("--order-csv", required=True, help="Bカート受注CSV")
+    ap.add_argument("--order-csv", required=True, help="Bカート受注CSV（1本で完結）")
     ap.add_argument("--maker-name", default=None, help="省略時はCSVから自動検出したメーカーコードとdata/maker_codes.csvから自動解決")
     ap.add_argument("--maker-code", default=None, help="省略時はCSVの商品名から自動検出。カンマ区切りで複数指定可")
     ap.add_argument("--output", default=None, help="省略時は '{コード}{会社名}様サンプルフィードバック.xlsx' を自動生成")
     args = ap.parse_args()
 
-    df_eval = read_csv_flexible(args.eval_csv)
     df_order = read_csv_flexible(args.order_csv)
 
     o_date = find_column(df_order, HEADER_KEYWORDS["納品日"])
@@ -145,19 +145,13 @@ def main():
     o_orderno = find_column(df_order, HEADER_KEYWORDS["受注番号"])
     o_qty = find_column(df_order, HEADER_KEYWORDS["受注数"])
     o_subtotal = find_column(df_order, HEADER_KEYWORDS["小計"])
-
-    e_date = find_column(df_eval, HEADER_KEYWORDS["納品日"])
-    e_company = find_column(df_eval, HEADER_KEYWORDS["会社名"])
-    e_product = find_column(df_eval, HEADER_KEYWORDS["商品名"])
-    e_orderno = find_column(df_eval, HEADER_KEYWORDS["受注番号"])
-    e_usage = find_column(df_eval, HEADER_KEYWORDS["サンプル用途"])
-    e_result = find_column(df_eval, HEADER_KEYWORDS["評価結果"])
-    e_adopt = find_column(df_eval, HEADER_KEYWORDS["採用数"])
+    o_usage = find_column(df_order, HEADER_KEYWORDS["サンプル用途"])
+    o_result = find_column(df_order, HEADER_KEYWORDS["評価結果"])
+    o_adopt = find_column(df_order, HEADER_KEYWORDS["採用数"])
 
     missing = [n for n, c in [
-        ("受注CSV:納品日", o_date), ("受注CSV:会社名", o_company), ("受注CSV:商品名", o_product),
-        ("受注CSV:セット名", o_set), ("受注CSV:受注番号", o_orderno),
-        ("評価CSV:会社名", e_company), ("評価CSV:商品名", e_product), ("評価CSV:受注番号", e_orderno),
+        ("納品日", o_date), ("会社名", o_company), ("配送先都道府県", o_pref),
+        ("商品名", o_product), ("セット名", o_set), ("受注番号", o_orderno),
     ] if c is None]
     if missing:
         sys.stderr.write("以下の列が見つかりませんでした: " + ", ".join(missing) + "\n")
@@ -189,25 +183,7 @@ def main():
     if not args.output:
         args.output = f"{args.maker_name}様サンプルフィードバック.xlsx"
 
-    df_order["_is_sample"] = df_order[o_set].astype(str).str.contains("サンプル", na=False)
-
-    # 受注CSVから 業態・都道府県 を 受注番号+商品名 で引けるようにする
-    lookup = df_order[[o_orderno, o_product, o_type, o_pref, o_set]].drop_duplicates(
-        subset=[o_orderno, o_product]
-    )
-    lookup = lookup.rename(columns={o_orderno: "_key_orderno", o_product: "_key_product",
-                                     o_type: "_業態", o_pref: "_都道府県", o_set: "_セット名"})
-
-    df = df_eval.rename(columns={e_orderno: "_key_orderno", e_product: "_key_product"})
-    df = df.merge(lookup, on=["_key_orderno", "_key_product"], how="left")
-
-    # 評価CSVには通常注文行も混在しているため、セット名でサンプル行のみに絞り込む
-    df = df[df["_セット名"].astype(str).str.contains("サンプル", na=False)]
-
     # 自社テスト除外
-    df = df[~df[e_company].astype(str).apply(
-        lambda v: any(kw in v for kw in EXCLUDE_COMPANY_KEYWORDS)
-    )]
     df_order = df_order[~df_order[o_company].astype(str).apply(
         lambda v: any(kw in v for kw in EXCLUDE_COMPANY_KEYWORDS)
     )]
@@ -215,33 +191,39 @@ def main():
     # メーカーコードで絞り込み
     if args.maker_code:
         codes = [c.strip() for c in args.maker_code.split(",") if c.strip()]
-        df = df[df["_key_product"].apply(lambda p: extract_maker_code(p) in codes)]
         df_order = df_order[df_order[o_product].apply(lambda p: extract_maker_code(p) in codes)]
 
-    if df.empty:
-        sys.stderr.write("絞り込み後、評価データが0件でした。メーカーコードを確認してください。\n")
+    if df_order.empty:
+        sys.stderr.write("絞り込み後、対象データが0件でした。メーカーコードを確認してください。\n")
         sys.exit(1)
 
-    # 通常注文をした会社（受注CSV全体から。セット名にサンプルを含まない行がある会社）
+    df_order["_is_sample"] = df_order[o_set].astype(str).str.contains("サンプル", na=False)
+    df = df_order[df_order["_is_sample"]].copy()
+
+    if df.empty:
+        sys.stderr.write("サンプル注文（セット名に「サンプル」を含む行）が見つかりませんでした。\n")
+        sys.exit(1)
+
+    # 通常注文をした会社（同じCSV内で、セット名にサンプルを含まない行がある会社）
     companies_with_order = set(
         df_order.loc[~df_order["_is_sample"], o_company].astype(str)
     )
 
-    df["_company"] = df[e_company].astype(str)
-    df["_date_parsed"] = df[e_date].apply(parse_date) if e_date else None
+    df["_company"] = df[o_company].astype(str)
+    df["_date_parsed"] = df[o_date].apply(parse_date)
 
     provided_companies = sorted(set(df["_company"]))
     n_provided = len(provided_companies)
     n_converted = sum(1 for c in provided_companies if c in companies_with_order)
     rate = (n_converted / n_provided) if n_provided else 0
 
-    all_dates = [d for d in df["_date_parsed"] if d is not None] if e_date else []
+    all_dates = [d for d in df["_date_parsed"] if d is not None]
     period_str = f"{min(all_dates):%Y/%m/%d}〜{max(all_dates):%Y/%m/%d}" if all_dates else ""
 
     df_sorted = df.sort_values(["_company", "_date_parsed"])
 
     groups = []
-    for (company, date_val), g in df_sorted.groupby(["_company", e_date], sort=False):
+    for (company, date_val), g in df_sorted.groupby(["_company", o_date], sort=False):
         groups.append((company, date_val, g))
     groups.sort(key=lambda x: (x[0], parse_date(x[1]) or datetime.max))
 
@@ -249,7 +231,7 @@ def main():
     company_type = {}
     for _, row in df.iterrows():
         c = row["_company"]
-        t = row.get("_業態")
+        t = row.get(o_type)
         if c not in company_type and pd.notna(t) and str(t).strip():
             company_type[c] = str(t).strip()
 
@@ -263,20 +245,15 @@ def main():
 
     for _, row in df.iterrows():
         t = company_type.get(row["_company"], "(不明)")
-        text = str(row.get(e_result, "")) if e_result else ""
+        text = str(row.get(o_result, "")) if o_result else ""
         biz_stats[t]["OK件数"] += count_keyword(text, "OK")
         biz_stats[t]["NG件数"] += count_keyword(text, "NG")
         biz_stats[t]["検討中件数"] += count_keyword(text, "検討中")
 
-    # ---------------- 受注データ分析（受注CSV全体・通常注文ベース） ----------------
+    # ---------------- 受注データ分析（通常注文ベース、金額は含めない） ----------------
     df_normal = df_order[~df_order["_is_sample"]].copy()
-    if o_qty:
-        df_normal["_qty"] = df_normal[o_qty].apply(to_number)
-    else:
-        df_normal["_qty"] = 0.0
+    df_normal["_qty"] = df_normal[o_qty].apply(to_number) if o_qty else 0.0
 
-    # 業態別 受注動向（金額は含めない。メーカーへの卸値と仕入価格の差が
-    # 露見しないよう、社数・件数・数量のみを対象にする）
     order_biz_stats = {}
     for _, row in df_normal.iterrows():
         t = str(row[o_type]).strip() if o_type and str(row[o_type]).strip() else "(不明)"
@@ -285,7 +262,6 @@ def main():
         s["件数"] += 1
         s["数量"] += row["_qty"]
 
-    # 商品別ランキング（数量ベース）
     product_stats = {}
     for _, row in df_normal.iterrows():
         p = str(row[o_product]).strip()
@@ -325,7 +301,7 @@ def main():
 
     row_ptr = header_row + 1
     for company, date_val, g in groups:
-        products = list(g["_key_product"])
+        products = list(g[o_product])
         n_rows = max(len(products), 1)
         start_row = row_ptr
         end_row = row_ptr + n_rows - 1
@@ -337,8 +313,8 @@ def main():
         order_text = "✅ 注文あり" if has_order else "－ なし"
 
         first = g.iloc[0]
-        result_text = str(first[e_result]).strip() if e_result else ""
-        adopt_text = str(first[e_adopt]).strip() if e_adopt else ""
+        result_text = str(first[o_result]).strip() if o_result else ""
+        adopt_text = str(first[o_adopt]).strip() if o_adopt else ""
         if adopt_text and result_text:
             g_value = f"評価都合／採用数：{adopt_text}\n{result_text}"
         else:
@@ -346,10 +322,10 @@ def main():
 
         merged_values = {
             "A": date_display,
-            "B": first.get("_業態", ""),
+            "B": first.get(o_type, "") if o_type else "",
             "C": company,
-            "D": first.get("_都道府県", ""),
-            "F": str(first[e_usage]).strip() if e_usage else "",
+            "D": first.get(o_pref, ""),
+            "F": str(first[o_usage]).strip() if o_usage else "",
             "G": g_value,
             "H": order_text,
         }
