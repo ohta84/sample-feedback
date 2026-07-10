@@ -274,28 +274,24 @@ def main():
         df_normal["_qty"] = df_normal[o_qty].apply(to_number)
     else:
         df_normal["_qty"] = 0.0
-    if o_subtotal:
-        df_normal["_amount"] = df_normal[o_subtotal].apply(to_number)
-    else:
-        df_normal["_amount"] = 0.0
 
-    # 業態別 受注動向
+    # 業態別 受注動向（金額は含めない。メーカーへの卸値と仕入価格の差が
+    # 露見しないよう、社数・件数・数量のみを対象にする）
     order_biz_stats = {}
     for _, row in df_normal.iterrows():
         t = str(row[o_type]).strip() if o_type and str(row[o_type]).strip() else "(不明)"
-        s = order_biz_stats.setdefault(t, {"companies": set(), "件数": 0, "金額": 0.0})
+        s = order_biz_stats.setdefault(t, {"companies": set(), "件数": 0, "数量": 0.0})
         s["companies"].add(str(row[o_company]))
         s["件数"] += 1
-        s["金額"] += row["_amount"]
+        s["数量"] += row["_qty"]
 
-    # 商品別ランキング
+    # 商品別ランキング（数量ベース）
     product_stats = {}
     for _, row in df_normal.iterrows():
         p = str(row[o_product]).strip()
-        s = product_stats.setdefault(p, {"companies": set(), "数量": 0.0, "金額": 0.0})
+        s = product_stats.setdefault(p, {"companies": set(), "数量": 0.0})
         s["companies"].add(str(row[o_company]))
         s["数量"] += row["_qty"]
-        s["金額"] += row["_amount"]
 
     # ---------------- Excel生成 ----------------
     wb = Workbook()
@@ -418,7 +414,7 @@ def main():
     ws3 = wb.create_sheet("受注データ分析")
 
     ws3.cell(row=1, column=1, value="業態別 受注動向（通常注文ベース）").font = Font(name=FONT_NAME, size=13, bold=True)
-    headers3a = ["業態", "受注社数", "受注件数", "受注金額合計", "平均受注額／社"]
+    headers3a = ["業態", "受注社数", "受注件数", "受注数量合計"]
     for i, h in enumerate(headers3a, start=1):
         c = ws3.cell(row=2, column=i, value=h)
         c.font = Font(name=FONT_NAME, size=11, bold=True)
@@ -426,23 +422,20 @@ def main():
         c.alignment = Alignment(horizontal="center", wrap_text=True)
         c.border = BORDER_ALL
 
-    sorted_order_biz = sorted(order_biz_stats.items(), key=lambda kv: kv[1]["金額"], reverse=True)
+    sorted_order_biz = sorted(order_biz_stats.items(), key=lambda kv: kv[1]["件数"], reverse=True)
     r = 3
     for biz, s in sorted_order_biz:
         n_companies = len(s["companies"])
-        avg = (s["金額"] / n_companies) if n_companies else 0
-        values = [biz, n_companies, s["件数"], s["金額"], avg]
+        values = [biz, n_companies, s["件数"], s["数量"]]
         for i, v in enumerate(values, start=1):
             cell = ws3.cell(row=r, column=i, value=v)
             cell.font = Font(name=FONT_NAME, size=11)
             cell.border = BORDER_ALL
-            if i in (4, 5):
-                cell.number_format = "#,##0"
         r += 1
 
     table2_start = r + 2
-    ws3.cell(row=table2_start, column=1, value="商品別ランキング（通常注文・金額順、上位10件）").font = Font(name=FONT_NAME, size=13, bold=True)
-    headers3b = ["商品名", "受注数量合計", "受注金額合計", "購入社数"]
+    ws3.cell(row=table2_start, column=1, value="商品別ランキング（通常注文・数量順、上位10件）").font = Font(name=FONT_NAME, size=13, bold=True)
+    headers3b = ["商品名", "受注数量合計", "購入社数"]
     for i, h in enumerate(headers3b, start=1):
         c = ws3.cell(row=table2_start + 1, column=i, value=h)
         c.font = Font(name=FONT_NAME, size=11, bold=True)
@@ -450,24 +443,22 @@ def main():
         c.alignment = Alignment(horizontal="center", wrap_text=True)
         c.border = BORDER_ALL
 
-    sorted_products = sorted(product_stats.items(), key=lambda kv: kv[1]["金額"], reverse=True)[:10]
+    sorted_products = sorted(product_stats.items(), key=lambda kv: kv[1]["数量"], reverse=True)[:10]
     r = table2_start + 2
     for product, s in sorted_products:
-        values = [product, s["数量"], s["金額"], len(s["companies"])]
+        values = [product, s["数量"], len(s["companies"])]
         for i, v in enumerate(values, start=1):
             cell = ws3.cell(row=r, column=i, value=v)
             cell.font = Font(name=FONT_NAME, size=11)
             cell.alignment = Alignment(wrap_text=True, vertical="center")
             cell.border = BORDER_ALL
-            if i == 3:
-                cell.number_format = "#,##0"
         r += 1
 
-    for col_letter, width in {"A": 45, "B": 14, "C": 16, "D": 12, "E": 16}.items():
+    for col_letter, width in {"A": 45, "B": 14, "C": 14, "D": 12}.items():
         ws3.column_dimensions[col_letter].width = width
 
     note3 = ws3.cell(row=r + 2, column=1,
-                      value="※このシートはサンプル注文を除いた「通常注文」のみを集計しています")
+                      value="※このシートはサンプル注文を除いた「通常注文」のみを集計しています（金額は含めていません）")
     note3.font = Font(name=FONT_NAME, size=9, italic=True)
 
     wb.save(args.output)
