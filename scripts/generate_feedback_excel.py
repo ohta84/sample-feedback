@@ -106,26 +106,32 @@ def to_number(value):
         return 0.0
 
 
+CORP_PREFIXES = ["株式会社", "有限会社", "合同会社", "（株）", "(株)", "（有）", "(有)"]
+
+
+def clean_company_name(name):
+    s = str(name).strip()
+    for p in CORP_PREFIXES:
+        s = s.replace(p, "")
+    return s.strip()
+
+
+def detect_maker_code(series_of_product_names):
+    codes = [extract_maker_code(p) for p in series_of_product_names]
+    codes = [c for c in codes if c]
+    if not codes:
+        return None
+    return pd.Series(codes).value_counts().idxmax()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--eval-csv", required=True, help="サンプル評価回収CSV")
     ap.add_argument("--order-csv", required=True, help="Bカート受注CSV")
-    ap.add_argument("--maker-name", default=None, help="省略時は--maker-codeとdata/maker_codes.csvから自動解決")
-    ap.add_argument("--maker-code", default=None, help="カンマ区切りで複数指定可")
-    ap.add_argument("--output", required=True)
+    ap.add_argument("--maker-name", default=None, help="省略時はCSVから自動検出したメーカーコードとdata/maker_codes.csvから自動解決")
+    ap.add_argument("--maker-code", default=None, help="省略時はCSVの商品名から自動検出。カンマ区切りで複数指定可")
+    ap.add_argument("--output", default=None, help="省略時は '{コード}{会社名}様サンプルフィードバック.xlsx' を自動生成")
     args = ap.parse_args()
-
-    if not args.maker_name:
-        if not args.maker_code:
-            sys.stderr.write("--maker-name か --maker-code のどちらかを指定してください\n")
-            sys.exit(1)
-        code_map = load_maker_code_map()
-        first_code = args.maker_code.split(",")[0].strip()
-        resolved = code_map.get(first_code)
-        if not resolved:
-            sys.stderr.write(f"メーカーコード {first_code} が data/maker_codes.csv に見つかりません。--maker-name を指定してください。\n")
-            sys.exit(1)
-        args.maker_name = f"{first_code}{resolved}"
 
     df_eval = read_csv_flexible(args.eval_csv)
     df_order = read_csv_flexible(args.order_csv)
@@ -156,6 +162,32 @@ def main():
     if missing:
         sys.stderr.write("以下の列が見つかりませんでした: " + ", ".join(missing) + "\n")
         sys.exit(1)
+
+    # メーカーコードの決定（未指定ならCSVの商品名から自動検出）
+    if args.maker_code:
+        maker_code_for_name = args.maker_code.split(",")[0].strip()
+    else:
+        detected = detect_maker_code(df_order[o_product])
+        if detected:
+            args.maker_code = detected
+            maker_code_for_name = detected
+        else:
+            maker_code_for_name = None
+
+    # メーカー名の決定（未指定ならコード表から自動解決、法人格は除去）
+    if not args.maker_name:
+        if not maker_code_for_name:
+            sys.stderr.write("メーカーコードをCSVから自動検出できませんでした。--maker-name か --maker-code を指定してください。\n")
+            sys.exit(1)
+        code_map = load_maker_code_map()
+        resolved = code_map.get(maker_code_for_name)
+        if not resolved:
+            sys.stderr.write(f"メーカーコード {maker_code_for_name} が data/maker_codes.csv に見つかりません。--maker-name を指定してください。\n")
+            sys.exit(1)
+        args.maker_name = f"{maker_code_for_name}{clean_company_name(resolved)}"
+
+    if not args.output:
+        args.output = f"{args.maker_name}様サンプルフィードバック.xlsx"
 
     df_order["_is_sample"] = df_order[o_set].astype(str).str.contains("サンプル", na=False)
 
