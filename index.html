@@ -26,16 +26,8 @@
     padding: 40px 16px 80px;
   }
   .wrap { max-width: 760px; margin: 0 auto; }
-  h1 {
-    font-size: 24px;
-    margin-bottom: 4px;
-  }
-  p.lead {
-    color: var(--muted);
-    margin-top: 0;
-    margin-bottom: 32px;
-    line-height: 1.7;
-  }
+  h1 { font-size: 24px; margin-bottom: 4px; }
+  p.lead { color: var(--muted); margin-top: 0; margin-bottom: 32px; line-height: 1.7; }
   .card {
     background: var(--card);
     border: 1px solid var(--border);
@@ -44,24 +36,9 @@
     margin-bottom: 24px;
     box-shadow: 0 1px 3px rgba(0,0,0,0.03);
   }
-  .card h2 {
-    font-size: 16px;
-    margin-top: 0;
-    margin-bottom: 16px;
-    color: var(--accent-dark);
-  }
-  label {
-    display: block;
-    font-size: 13px;
-    font-weight: 600;
-    margin-bottom: 6px;
-    color: var(--text);
-  }
-  .hint {
-    font-size: 12px;
-    color: var(--muted);
-    margin: -2px 0 10px;
-  }
+  .card h2 { font-size: 16px; margin-top: 0; margin-bottom: 16px; color: var(--accent-dark); }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--text); }
+  .hint { font-size: 12px; color: var(--muted); margin: -2px 0 10px; }
   .field { margin-bottom: 20px; }
   .field:last-child { margin-bottom: 0; }
   input[type="file"] {
@@ -79,11 +56,7 @@
     border-radius: 8px;
     font-size: 14px;
   }
-  .row2 {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-  }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   button#generateBtn {
     width: 100%;
     padding: 14px;
@@ -98,12 +71,7 @@
   }
   button#generateBtn:hover { background: var(--accent-dark); }
   button#generateBtn:disabled { background: #b9b6ab; cursor: not-allowed; }
-  #status {
-    margin-top: 16px;
-    font-size: 13px;
-    line-height: 1.8;
-    white-space: pre-wrap;
-  }
+  #status { margin-top: 16px; font-size: 13px; line-height: 1.8; white-space: pre-wrap; }
   #status.ok { color: var(--accent-dark); }
   #status.err { color: var(--danger); }
   #summary {
@@ -117,33 +85,23 @@
     line-height: 1.9;
   }
   #summary b { color: var(--accent-dark); }
-  footer {
-    text-align: center;
-    color: var(--muted);
-    font-size: 12px;
-    margin-top: 32px;
-  }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 32px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>サンプルフィードバックExcel自動生成</h1>
   <p class="lead">
-    Bカートの「サンプル評価回収CSV」と「受注CSV」をアップロードすると、
-    メーカー別のサンプルフィードバックExcelをブラウザ内で生成してダウンロードできます。
-    ファイルはサーバーに送信されず、すべてこの画面の中だけで処理されます。
+    Bカートの受注CSV（1本）をアップロードすると、メーカー別のサンプルフィードバックExcelを
+    ブラウザ内で生成してダウンロードできます。ファイルはサーバーに送信されず、
+    すべてこの画面の中だけで処理されます。
   </p>
 
   <div class="card">
-    <h2>① CSVファイル</h2>
-    <div class="field">
-      <label for="evalCsv">サンプル評価回収CSV</label>
-      <div class="hint">会社名・納品日・商品名・サンプル評価結果などを含むCSV</div>
-      <input type="file" id="evalCsv" accept=".csv">
-    </div>
+    <h2>① 受注CSV</h2>
     <div class="field">
       <label for="orderCsv">Bカート受注CSV</label>
-      <div class="hint">受注番号・業態・配送先都道府県・セット名などを含む全項目版CSV</div>
+      <div class="hint">受注番号・業態・配送先都道府県・セット名・サンプル用途・サンプル評価結果などを含む全項目版CSV。これ1本でOKです</div>
       <input type="file" id="orderCsv" accept=".csv">
     </div>
   </div>
@@ -196,40 +154,14 @@ const HEADER_KEYWORDS = {
   "小計": ["小計"],
 };
 
-function toNumber(value) {
-  const s = String(value == null ? "" : value).trim().replace(/,/g, "");
-  if (s === "" || s === "nan") return 0;
-  const n = parseFloat(s);
-  return isNaN(n) ? 0 : n;
-}
-
-const CORP_PREFIXES = ["株式会社", "有限会社", "合同会社", "（株）", "(株)", "（有）", "(有)"];
-
-function cleanCompanyName(name) {
-  let s = String(name || "").trim();
-  for (const p of CORP_PREFIXES) s = s.split(p).join("");
-  return s.trim();
-}
-
-function detectMakerCode(productNames) {
-  const counts = {};
-  for (const p of productNames) {
-    const c = extractMakerCode(p);
-    if (c) counts[c] = (counts[c] || 0) + 1;
-  }
-  let best = null, bestCount = 0;
-  for (const [c, n] of Object.entries(counts)) {
-    if (n > bestCount) { best = c; bestCount = n; }
-  }
-  return best;
-}
-
 const FONT_NAME = "Arial";
 const GREY_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9D9D9" } };
 const GREEN_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2EFDA" } };
 const THIN_GREY = { style: "thin", color: { argb: "FFBFBFBF" } };
 const BORDER_ALL = { top: THIN_GREY, bottom: THIN_GREY, left: THIN_GREY, right: THIN_GREY };
 const COLUMN_WIDTHS = { A: 14.6, B: 15.1, C: 31.6, D: 11.9, E: 37.0, F: 35.2, G: 71.4, H: 14.0 };
+
+const CORP_PREFIXES = ["株式会社", "有限会社", "合同会社", "（株）", "(株)", "（有）", "(有)"];
 
 function setStatus(msg, kind) {
   const el = document.getElementById("status");
@@ -251,6 +183,25 @@ function extractMakerCode(productName) {
   return m ? m[1] : null;
 }
 
+function detectMakerCode(productNames) {
+  const counts = {};
+  for (const p of productNames) {
+    const c = extractMakerCode(p);
+    if (c) counts[c] = (counts[c] || 0) + 1;
+  }
+  let best = null, bestCount = 0;
+  for (const [c, n] of Object.entries(counts)) {
+    if (n > bestCount) { best = c; bestCount = n; }
+  }
+  return best;
+}
+
+function cleanCompanyName(name) {
+  let s = String(name || "").trim();
+  for (const p of CORP_PREFIXES) s = s.split(p).join("");
+  return s.trim();
+}
+
 function parseDateJP(value) {
   if (!value) return null;
   const v = String(value).trim();
@@ -270,6 +221,13 @@ function formatDateJP(d) {
 function countKeyword(text, kw) {
   if (!text) return 0;
   return String(text).split(kw).length - 1;
+}
+
+function toNumber(value) {
+  const s = String(value == null ? "" : value).trim().replace(/,/g, "");
+  if (s === "" || s === "nan") return 0;
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
 }
 
 // 文字コード自動判定してテキスト化 (cp932/shift_jis or utf-8)
@@ -333,14 +291,14 @@ function setCell(ws, rowIdx, colIdx, value, opts) {
 }
 
 async function generate() {
-  const evalFile = document.getElementById("evalCsv").files[0];
   const orderFile = document.getElementById("orderCsv").files[0];
   const makerCodeStr = document.getElementById("makerCode").value.trim();
   let makerName = document.getElementById("makerName").value.trim();
+
   document.getElementById("summary").style.display = "none";
 
-  if (!evalFile || !orderFile) {
-    setStatus("サンプル評価回収CSVと受注CSVの両方を選択してください。", "err");
+  if (!orderFile) {
+    setStatus("受注CSVを選択してください。", "err");
     return;
   }
 
@@ -349,11 +307,10 @@ async function generate() {
   setStatus("CSVを読み込み中...", "");
 
   try {
-    const [evalText, orderText] = await Promise.all([decodeFile(evalFile), decodeFile(orderFile)]);
-    const evalParsed = parseCsvText(evalText);
+    const orderText = await decodeFile(orderFile);
     const orderParsed = parseCsvText(orderText);
+    const oh = orderParsed.headers;
 
-    const oh = orderParsed.headers, eh = evalParsed.headers;
     const o_date = findColumn(oh, HEADER_KEYWORDS["納品日"]);
     const o_type = findColumn(oh, HEADER_KEYWORDS["業態"]);
     const o_company = findColumn(oh, HEADER_KEYWORDS["会社名"]);
@@ -362,25 +319,17 @@ async function generate() {
     const o_set = findColumn(oh, HEADER_KEYWORDS["セット名"]);
     const o_orderno = findColumn(oh, HEADER_KEYWORDS["受注番号"]);
     const o_qty = findColumn(oh, HEADER_KEYWORDS["受注数"]);
-    const o_subtotal = findColumn(oh, HEADER_KEYWORDS["小計"]);
-
-    const e_date = findColumn(eh, HEADER_KEYWORDS["納品日"]);
-    const e_company = findColumn(eh, HEADER_KEYWORDS["会社名"]);
-    const e_product = findColumn(eh, HEADER_KEYWORDS["商品名"]);
-    const e_orderno = findColumn(eh, HEADER_KEYWORDS["受注番号"]);
-    const e_usage = findColumn(eh, HEADER_KEYWORDS["サンプル用途"]);
-    const e_result = findColumn(eh, HEADER_KEYWORDS["評価結果"]);
-    const e_adopt = findColumn(eh, HEADER_KEYWORDS["採用数"]);
+    const o_usage = findColumn(oh, HEADER_KEYWORDS["サンプル用途"]);
+    const o_result = findColumn(oh, HEADER_KEYWORDS["評価結果"]);
+    const o_adopt = findColumn(oh, HEADER_KEYWORDS["採用数"]);
 
     const missing = [];
-    if (!o_date) missing.push("受注CSV:納品日");
-    if (!o_company) missing.push("受注CSV:会社名");
-    if (!o_product) missing.push("受注CSV:商品名");
-    if (!o_set) missing.push("受注CSV:セット名");
-    if (!o_orderno) missing.push("受注CSV:受注番号");
-    if (!e_company) missing.push("評価CSV:会社名");
-    if (!e_product) missing.push("評価CSV:商品名");
-    if (!e_orderno) missing.push("評価CSV:受注番号");
+    if (!o_date) missing.push("納品日");
+    if (!o_company) missing.push("会社名");
+    if (!o_pref) missing.push("配送先都道府県");
+    if (!o_product) missing.push("商品名");
+    if (!o_set) missing.push("セット名");
+    if (!o_orderno) missing.push("受注番号");
     if (missing.length) {
       throw new Error("以下の列が見つかりませんでした: " + missing.join(", "));
     }
@@ -401,26 +350,13 @@ async function generate() {
 
     setStatus("データを集計中...", "");
 
-    // 受注CSV: サンプル判定・自社除外
+    // 自社テスト除外
     let orderRows = orderParsed.rows.filter(r => {
       const c = String(r[o_company] || "");
       return !EXCLUDE_COMPANY_KEYWORDS.some(kw => c.includes(kw));
     });
-    orderRows.forEach(r => { r.__isSample = String(r[o_set] || "").includes("サンプル"); });
 
-    // 受注番号+商品名 のルックアップ
-    const lookup = new Map();
-    for (const r of orderRows) {
-      const key = `${r[o_orderno]}||${r[o_product]}`;
-      if (!lookup.has(key)) {
-        lookup.set(key, {
-          業態: r[o_type] || "",
-          都道府県: r[o_pref] || "",
-          セット名: r[o_set] || "",
-        });
-      }
-    }
-
+    // メーカーコードで絞り込み
     const codes = makerCodeStr
       ? makerCodeStr.split(",").map(c => c.trim()).filter(Boolean)
       : (resolvedMakerCode ? [resolvedMakerCode] : null);
@@ -428,28 +364,19 @@ async function generate() {
       orderRows = orderRows.filter(r => codes.includes(extractMakerCode(r[o_product])));
     }
 
-    // 評価CSV: 自社除外 → 結合 → サンプル行のみ → メーカーコード絞り込み
-    let df = evalParsed.rows.filter(r => {
-      const c = String(r[e_company] || "");
-      return !EXCLUDE_COMPANY_KEYWORDS.some(kw => c.includes(kw));
-    }).map(r => {
-      const key = `${r[e_orderno]}||${r[e_product]}`;
-      const info = lookup.get(key) || { 業態: "", 都道府県: "", セット名: "" };
-      return Object.assign({}, r, {
-        __業態: info.業態,
-        __都道府県: info.都道府県,
-        __セット名: info.セット名,
-        __company: String(r[e_company] || ""),
-        __dateParsed: e_date ? parseDateJP(r[e_date]) : null,
-      });
-    }).filter(r => String(r.__セット名 || "").includes("サンプル"));
-
-    if (codes) {
-      df = df.filter(r => codes.includes(extractMakerCode(r[e_product])));
+    if (orderRows.length === 0) {
+      throw new Error("絞り込み後、対象データが0件でした。メーカーコードを確認してください。");
     }
 
+    orderRows.forEach(r => { r.__isSample = String(r[o_set] || "").includes("サンプル"); });
+
+    const df = orderRows.filter(r => r.__isSample).map(r => Object.assign({}, r, {
+      __company: String(r[o_company] || ""),
+      __dateParsed: o_date ? parseDateJP(r[o_date]) : null,
+    }));
+
     if (df.length === 0) {
-      throw new Error("絞り込み後、評価データが0件でした。メーカーコードを確認してください。");
+      throw new Error("サンプル注文（セット名に「サンプル」を含む行）が見つかりませんでした。");
     }
 
     const companiesWithOrder = new Set(
@@ -480,9 +407,9 @@ async function generate() {
     const groups = [];
     let curKey = null, curGroup = null;
     for (const r of df) {
-      const key = r.__company + "||" + (e_date ? r[e_date] : "");
+      const key = r.__company + "||" + (o_date ? r[o_date] : "");
       if (key !== curKey) {
-        curGroup = { company: r.__company, dateVal: e_date ? r[e_date] : "", rows: [] };
+        curGroup = { company: r.__company, dateVal: o_date ? r[o_date] : "", rows: [] };
         groups.push(curGroup);
         curKey = key;
       }
@@ -492,7 +419,7 @@ async function generate() {
     // 業態別分析
     const companyType = {};
     for (const r of df) {
-      if (!companyType[r.__company] && r.__業態) companyType[r.__company] = r.__業態;
+      if (!companyType[r.__company] && o_type && r[o_type]) companyType[r.__company] = r[o_type];
     }
     const bizStats = {};
     for (const c of providedCompanies) {
@@ -503,10 +430,28 @@ async function generate() {
     }
     for (const r of df) {
       const t = companyType[r.__company] || "(不明)";
-      const text = e_result ? String(r[e_result] || "") : "";
+      const text = o_result ? String(r[o_result] || "") : "";
       bizStats[t].OK += countKeyword(text, "OK");
       bizStats[t].NG += countKeyword(text, "NG");
       bizStats[t].検討中 += countKeyword(text, "検討中");
+    }
+
+    // 受注データ分析（通常注文ベース、金額は含めない）
+    const normalRows = orderRows.filter(r => !r.__isSample);
+    const orderBizStats = {};
+    for (const r of normalRows) {
+      const t = (o_type && String(r[o_type] || "").trim()) || "(不明)";
+      if (!orderBizStats[t]) orderBizStats[t] = { companies: new Set(), 件数: 0, 数量: 0 };
+      orderBizStats[t].companies.add(String(r[o_company] || ""));
+      orderBizStats[t].件数 += 1;
+      orderBizStats[t].数量 += o_qty ? toNumber(r[o_qty]) : 0;
+    }
+    const productStats = {};
+    for (const r of normalRows) {
+      const p = String(r[o_product] || "").trim();
+      if (!productStats[p]) productStats[p] = { companies: new Set(), 数量: 0 };
+      productStats[p].companies.add(String(r[o_company] || ""));
+      productStats[p].数量 += o_qty ? toNumber(r[o_qty]) : 0;
     }
 
     setStatus("Excelを生成中...", "");
@@ -530,27 +475,27 @@ async function generate() {
 
     let rowPtr = headerRow + 1;
     for (const g of groups) {
-      const products = g.rows.map(r => r[e_product]);
+      const products = g.rows.map(r => r[o_product]);
       const nRows = Math.max(products.length, 1);
       const startRow = rowPtr;
       const endRow = rowPtr + nRows - 1;
 
-      const dParsed = e_date ? parseDateJP(g.dateVal) : null;
+      const dParsed = o_date ? parseDateJP(g.dateVal) : null;
       const dateDisplay = dParsed ? formatDateJP(dParsed) : g.dateVal;
 
       const hasOrder = companiesWithOrder.has(g.company);
       const orderText = hasOrder ? "✅ 注文あり" : "－ なし";
 
       const first = g.rows[0];
-      const resultText = e_result ? String(first[e_result] || "").trim() : "";
-      const adoptText = e_adopt ? String(first[e_adopt] || "").trim() : "";
+      const resultText = o_result ? String(first[o_result] || "").trim() : "";
+      const adoptText = o_adopt ? String(first[o_adopt] || "").trim() : "";
       let gValue;
       if (adoptText && resultText) gValue = `評価都合／採用数：${adoptText}\n${resultText}`;
       else gValue = resultText || adoptText;
 
       const mergedValues = {
-        A: dateDisplay, B: first.__業態 || "", C: g.company, D: first.__都道府県 || "",
-        F: e_usage ? String(first[e_usage] || "").trim() : "", G: gValue, H: orderText,
+        A: dateDisplay, B: (o_type && first[o_type]) || "", C: g.company, D: (o_pref && first[o_pref]) || "",
+        F: o_usage ? String(first[o_usage] || "").trim() : "", G: gValue, H: orderText,
       };
 
       const colIndexOf = { A: 1, B: 2, C: 3, D: 4, F: 6, G: 7, H: 8 };
@@ -609,26 +554,6 @@ async function generate() {
     const noteRow = sortedBiz.length + 3;
     ws2.getCell(noteRow, 1).value = "※OK/NG/検討中件数は評価コメント内の文字列を数えた概算値です（1コメントに複数商品分の評価が含まれる場合があります）";
     ws2.getCell(noteRow, 1).font = { name: FONT_NAME, size: 9, italic: true };
-
-    // ---------------- 受注データ分析（受注CSV全体・通常注文ベース） ----------------
-    const normalRows = orderRows.filter(r => !r.__isSample);
-
-    const orderBizStats = {};
-    for (const r of normalRows) {
-      const t = (o_type && String(r[o_type] || "").trim()) || "(不明)";
-      if (!orderBizStats[t]) orderBizStats[t] = { companies: new Set(), 件数: 0, 数量: 0 };
-      orderBizStats[t].companies.add(String(r[o_company] || ""));
-      orderBizStats[t].件数 += 1;
-      orderBizStats[t].数量 += o_qty ? toNumber(r[o_qty]) : 0;
-    }
-
-    const productStats = {};
-    for (const r of normalRows) {
-      const p = String(r[o_product] || "").trim();
-      if (!productStats[p]) productStats[p] = { companies: new Set(), 数量: 0 };
-      productStats[p].companies.add(String(r[o_company] || ""));
-      productStats[p].数量 += o_qty ? toNumber(r[o_qty]) : 0;
-    }
 
     // シート3: 受注データ分析
     const ws3 = wb.addWorksheet("受注データ分析");
