@@ -149,17 +149,22 @@
   </div>
 
   <div class="card">
-    <h2>② メーカー情報</h2>
+    <h2>② メーカー情報（省略可）</h2>
+    <div class="hint" style="margin-bottom:14px;">
+      通常は入力不要です。CSVの商品名（例: [138]）からメーカーコードを自動検出し、
+      コード表（data/maker_codes.csv）からメーカー名も自動で決まります。
+      複数メーカーが混ざったCSVの場合や、コード表に無いメーカーの場合のみ入力してください。
+    </div>
     <div class="row2">
       <div class="field">
         <label for="makerCode">メーカーコード（任意）</label>
-        <div class="hint">商品名冒頭の [141] のような数字。複数はカンマ区切り</div>
-        <input type="text" id="makerCode" placeholder="例: 141">
+        <div class="hint">複数メーカーが混在するCSVを絞り込みたいときだけ入力。カンマ区切りで複数可</div>
+        <input type="text" id="makerCode" placeholder="自動検出（未入力でOK）">
       </div>
       <div class="field">
         <label for="makerName">メーカー名（任意）</label>
-        <div class="hint">未入力ならコード表から自動解決します</div>
-        <input type="text" id="makerName" placeholder="例: 141東京堂">
+        <div class="hint">コード表に無い場合や、表示名を変えたいときだけ入力</div>
+        <input type="text" id="makerName" placeholder="自動解決（未入力でOK）">
       </div>
     </div>
   </div>
@@ -196,6 +201,27 @@ function toNumber(value) {
   if (s === "" || s === "nan") return 0;
   const n = parseFloat(s);
   return isNaN(n) ? 0 : n;
+}
+
+const CORP_PREFIXES = ["株式会社", "有限会社", "合同会社", "（株）", "(株)", "（有）", "(有)"];
+
+function cleanCompanyName(name) {
+  let s = String(name || "").trim();
+  for (const p of CORP_PREFIXES) s = s.split(p).join("");
+  return s.trim();
+}
+
+function detectMakerCode(productNames) {
+  const counts = {};
+  for (const p of productNames) {
+    const c = extractMakerCode(p);
+    if (c) counts[c] = (counts[c] || 0) + 1;
+  }
+  let best = null, bestCount = 0;
+  for (const [c, n] of Object.entries(counts)) {
+    if (n > bestCount) { best = c; bestCount = n; }
+  }
+  return best;
 }
 
 const FONT_NAME = "Arial";
@@ -311,7 +337,6 @@ async function generate() {
   const orderFile = document.getElementById("orderCsv").files[0];
   const makerCodeStr = document.getElementById("makerCode").value.trim();
   let makerName = document.getElementById("makerName").value.trim();
-
   document.getElementById("summary").style.display = "none";
 
   if (!evalFile || !orderFile) {
@@ -360,13 +385,18 @@ async function generate() {
       throw new Error("以下の列が見つかりませんでした: " + missing.join(", "));
     }
 
+    // メーカーコードの決定（未指定ならCSVの商品名から自動検出）
+    let resolvedMakerCode = makerCodeStr ? makerCodeStr.split(",")[0].trim() : null;
+    if (!resolvedMakerCode) {
+      resolvedMakerCode = detectMakerCode(orderParsed.rows.map(r => r[o_product]));
+    }
+
     if (!makerName) {
-      if (!makerCodeStr) throw new Error("メーカー名かメーカーコードのどちらかを入力してください。");
+      if (!resolvedMakerCode) throw new Error("メーカーコードをCSVから自動検出できませんでした。メーカー名かメーカーコードを入力してください。");
       const codeMap = await loadMakerCodeMap();
-      const firstCode = makerCodeStr.split(",")[0].trim();
-      const resolved = codeMap[firstCode];
-      if (!resolved) throw new Error(`メーカーコード ${firstCode} が data/maker_codes.csv に見つかりません。メーカー名を直接入力してください。`);
-      makerName = `${firstCode}${resolved}`;
+      const resolved = codeMap[resolvedMakerCode];
+      if (!resolved) throw new Error(`メーカーコード ${resolvedMakerCode} が data/maker_codes.csv に見つかりません。メーカー名を直接入力してください。`);
+      makerName = `${resolvedMakerCode}${cleanCompanyName(resolved)}`;
     }
 
     setStatus("データを集計中...", "");
@@ -391,7 +421,9 @@ async function generate() {
       }
     }
 
-    const codes = makerCodeStr ? makerCodeStr.split(",").map(c => c.trim()).filter(Boolean) : null;
+    const codes = makerCodeStr
+      ? makerCodeStr.split(",").map(c => c.trim()).filter(Boolean)
+      : (resolvedMakerCode ? [resolvedMakerCode] : null);
     if (codes) {
       orderRows = orderRows.filter(r => codes.includes(extractMakerCode(r[o_product])));
     }
