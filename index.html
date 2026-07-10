@@ -616,63 +616,59 @@ async function generate() {
     const orderBizStats = {};
     for (const r of normalRows) {
       const t = (o_type && String(r[o_type] || "").trim()) || "(不明)";
-      if (!orderBizStats[t]) orderBizStats[t] = { companies: new Set(), 件数: 0, 金額: 0 };
+      if (!orderBizStats[t]) orderBizStats[t] = { companies: new Set(), 件数: 0, 数量: 0 };
       orderBizStats[t].companies.add(String(r[o_company] || ""));
       orderBizStats[t].件数 += 1;
-      orderBizStats[t].金額 += o_subtotal ? toNumber(r[o_subtotal]) : 0;
+      orderBizStats[t].数量 += o_qty ? toNumber(r[o_qty]) : 0;
     }
 
     const productStats = {};
     for (const r of normalRows) {
       const p = String(r[o_product] || "").trim();
-      if (!productStats[p]) productStats[p] = { companies: new Set(), 数量: 0, 金額: 0 };
+      if (!productStats[p]) productStats[p] = { companies: new Set(), 数量: 0 };
       productStats[p].companies.add(String(r[o_company] || ""));
       productStats[p].数量 += o_qty ? toNumber(r[o_qty]) : 0;
-      productStats[p].金額 += o_subtotal ? toNumber(r[o_subtotal]) : 0;
     }
 
     // シート3: 受注データ分析
     const ws3 = wb.addWorksheet("受注データ分析");
     setCell(ws3, 1, 1, "業態別 受注動向（通常注文ベース）", { font: { bold: true, size: 13 }, border: false, alignment: { wrapText: false } });
-    const headers3a = ["業態", "受注社数", "受注件数", "受注金額合計", "平均受注額／社"];
+    const headers3a = ["業態", "受注社数", "受注件数", "受注数量合計"];
     headers3a.forEach((h, i) => {
       setCell(ws3, 2, i + 1, h, { font: { bold: true }, fill: GREY_FILL, alignment: { horizontal: "center", wrapText: true } });
     });
 
-    const sortedOrderBiz = Object.entries(orderBizStats).sort((a, b) => b[1].金額 - a[1].金額);
+    const sortedOrderBiz = Object.entries(orderBizStats).sort((a, b) => b[1].件数 - a[1].件数);
     let r3 = 3;
     for (const [biz, s] of sortedOrderBiz) {
       const nCompanies = s.companies.size;
-      const avg = nCompanies ? s.金額 / nCompanies : 0;
       setCell(ws3, r3, 1, biz, {});
       setCell(ws3, r3, 2, nCompanies, {});
       setCell(ws3, r3, 3, s.件数, {});
-      setCell(ws3, r3, 4, s.金額, { numFmt: "#,##0" });
-      setCell(ws3, r3, 5, avg, { numFmt: "#,##0" });
+      setCell(ws3, r3, 4, s.数量, {});
       r3 += 1;
     }
 
     const table2Start = r3 + 2;
-    setCell(ws3, table2Start, 1, "商品別ランキング（通常注文・金額順、上位10件）", { font: { bold: true, size: 13 }, border: false, alignment: { wrapText: false } });
-    const headers3b = ["商品名", "受注数量合計", "受注金額合計", "購入社数"];
+    setCell(ws3, table2Start, 1, "商品別ランキング（通常注文・数量順、上位10件）", { font: { bold: true, size: 13 }, border: false, alignment: { wrapText: false } });
+    const headers3b = ["商品名", "受注数量合計", "購入社数"];
     headers3b.forEach((h, i) => {
       setCell(ws3, table2Start + 1, i + 1, h, { font: { bold: true }, fill: GREY_FILL, alignment: { horizontal: "center", wrapText: true } });
     });
 
-    const sortedProducts = Object.entries(productStats).sort((a, b) => b[1].金額 - a[1].金額).slice(0, 10);
+    const sortedProducts = Object.entries(productStats).sort((a, b) => b[1].数量 - a[1].数量).slice(0, 10);
     r3 = table2Start + 2;
     for (const [product, s] of sortedProducts) {
       setCell(ws3, r3, 1, product, {});
       setCell(ws3, r3, 2, s.数量, {});
-      setCell(ws3, r3, 3, s.金額, { numFmt: "#,##0" });
-      setCell(ws3, r3, 4, s.companies.size, {});
+      setCell(ws3, r3, 3, s.companies.size, {});
       r3 += 1;
     }
 
-    ["A", "B", "C", "D", "E"].forEach((col, i) => {
-      ws3.getColumn(col).width = [45, 14, 16, 12, 16][i];
+    ["A", "B", "C", "D"].forEach((col, i) => {
+      ws3.getColumn(col).width = [45, 14, 14, 12][i];
     });
-    setCell(ws3, r3 + 2, 1, "※このシートはサンプル注文を除いた「通常注文」のみを集計しています", { font: { size: 9, italic: true }, border: false, alignment: { wrapText: false } });
+    setCell(ws3, r3 + 2, 1, "※このシートはサンプル注文を除いた「通常注文」のみを集計しています（金額は含めていません）", { font: { size: 9, italic: true }, border: false, alignment: { wrapText: false } });
 
     const buffer = await wb.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
