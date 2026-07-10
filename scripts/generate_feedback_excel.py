@@ -44,6 +44,8 @@ HEADER_KEYWORDS = {
     "サンプル用途": ["サンプル用途"],
     "評価結果": ["サンプル評価結果"],
     "採用数": ["評価都合／採用数", "評価都合/採用数"],
+    "受注数": ["受注数"],
+    "小計": ["小計"],
 }
 
 FONT_NAME = "Arial"
@@ -94,6 +96,16 @@ def count_keyword(text, kw):
     return str(text).count(kw)
 
 
+def to_number(value):
+    s = str(value).strip().replace(",", "")
+    if s in ("", "nan", "None"):
+        return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--eval-csv", required=True, help="サンプル評価回収CSV")
@@ -125,6 +137,8 @@ def main():
     o_product = find_column(df_order, HEADER_KEYWORDS["商品名"])
     o_set = find_column(df_order, HEADER_KEYWORDS["セット名"])
     o_orderno = find_column(df_order, HEADER_KEYWORDS["受注番号"])
+    o_qty = find_column(df_order, HEADER_KEYWORDS["受注数"])
+    o_subtotal = find_column(df_order, HEADER_KEYWORDS["小計"])
 
     e_date = find_column(df_eval, HEADER_KEYWORDS["納品日"])
     e_company = find_column(df_eval, HEADER_KEYWORDS["会社名"])
@@ -221,6 +235,35 @@ def main():
         biz_stats[t]["OK件数"] += count_keyword(text, "OK")
         biz_stats[t]["NG件数"] += count_keyword(text, "NG")
         biz_stats[t]["検討中件数"] += count_keyword(text, "検討中")
+
+    # ---------------- 受注データ分析（受注CSV全体・通常注文ベース） ----------------
+    df_normal = df_order[~df_order["_is_sample"]].copy()
+    if o_qty:
+        df_normal["_qty"] = df_normal[o_qty].apply(to_number)
+    else:
+        df_normal["_qty"] = 0.0
+    if o_subtotal:
+        df_normal["_amount"] = df_normal[o_subtotal].apply(to_number)
+    else:
+        df_normal["_amount"] = 0.0
+
+    # 業態別 受注動向
+    order_biz_stats = {}
+    for _, row in df_normal.iterrows():
+        t = str(row[o_type]).strip() if o_type and str(row[o_type]).strip() else "(不明)"
+        s = order_biz_stats.setdefault(t, {"companies": set(), "件数": 0, "金額": 0.0})
+        s["companies"].add(str(row[o_company]))
+        s["件数"] += 1
+        s["金額"] += row["_amount"]
+
+    # 商品別ランキング
+    product_stats = {}
+    for _, row in df_normal.iterrows():
+        p = str(row[o_product]).strip()
+        s = product_stats.setdefault(p, {"companies": set(), "数量": 0.0, "金額": 0.0})
+        s["companies"].add(str(row[o_company]))
+        s["数量"] += row["_qty"]
+        s["金額"] += row["_amount"]
 
     # ---------------- Excel生成 ----------------
     wb = Workbook()
@@ -338,6 +381,62 @@ def main():
     note = ws2.cell(row=len(sorted_biz) + 3, column=1,
                      value="※OK/NG/検討中件数は評価コメント内の文字列を数えた概算値です（1コメントに複数商品分の評価が含まれる場合があります）")
     note.font = Font(name=FONT_NAME, size=9, italic=True)
+
+    # ---------------- シート3: 受注データ分析 ----------------
+    ws3 = wb.create_sheet("受注データ分析")
+
+    ws3.cell(row=1, column=1, value="業態別 受注動向（通常注文ベース）").font = Font(name=FONT_NAME, size=13, bold=True)
+    headers3a = ["業態", "受注社数", "受注件数", "受注金額合計", "平均受注額／社"]
+    for i, h in enumerate(headers3a, start=1):
+        c = ws3.cell(row=2, column=i, value=h)
+        c.font = Font(name=FONT_NAME, size=11, bold=True)
+        c.fill = GREY_FILL
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        c.border = BORDER_ALL
+
+    sorted_order_biz = sorted(order_biz_stats.items(), key=lambda kv: kv[1]["金額"], reverse=True)
+    r = 3
+    for biz, s in sorted_order_biz:
+        n_companies = len(s["companies"])
+        avg = (s["金額"] / n_companies) if n_companies else 0
+        values = [biz, n_companies, s["件数"], s["金額"], avg]
+        for i, v in enumerate(values, start=1):
+            cell = ws3.cell(row=r, column=i, value=v)
+            cell.font = Font(name=FONT_NAME, size=11)
+            cell.border = BORDER_ALL
+            if i in (4, 5):
+                cell.number_format = "#,##0"
+        r += 1
+
+    table2_start = r + 2
+    ws3.cell(row=table2_start, column=1, value="商品別ランキング（通常注文・金額順、上位10件）").font = Font(name=FONT_NAME, size=13, bold=True)
+    headers3b = ["商品名", "受注数量合計", "受注金額合計", "購入社数"]
+    for i, h in enumerate(headers3b, start=1):
+        c = ws3.cell(row=table2_start + 1, column=i, value=h)
+        c.font = Font(name=FONT_NAME, size=11, bold=True)
+        c.fill = GREY_FILL
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        c.border = BORDER_ALL
+
+    sorted_products = sorted(product_stats.items(), key=lambda kv: kv[1]["金額"], reverse=True)[:10]
+    r = table2_start + 2
+    for product, s in sorted_products:
+        values = [product, s["数量"], s["金額"], len(s["companies"])]
+        for i, v in enumerate(values, start=1):
+            cell = ws3.cell(row=r, column=i, value=v)
+            cell.font = Font(name=FONT_NAME, size=11)
+            cell.alignment = Alignment(wrap_text=True, vertical="center")
+            cell.border = BORDER_ALL
+            if i == 3:
+                cell.number_format = "#,##0"
+        r += 1
+
+    for col_letter, width in {"A": 45, "B": 14, "C": 16, "D": 12, "E": 16}.items():
+        ws3.column_dimensions[col_letter].width = width
+
+    note3 = ws3.cell(row=r + 2, column=1,
+                      value="※このシートはサンプル注文を除いた「通常注文」のみを集計しています")
+    note3.font = Font(name=FONT_NAME, size=9, italic=True)
 
     wb.save(args.output)
     print(f"OK: {args.output} (提供社数={n_provided}, 転換社数={n_converted}, 転換率={rate*100:.1f}%)")
