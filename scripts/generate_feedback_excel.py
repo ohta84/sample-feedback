@@ -324,7 +324,8 @@ def main():
     cell4 = set_row(4, f"注文転換率：{rate*100:.1f}%", bold=True, color="FF0000")
 
     set_row(6, period_str)
-    updater_cell = ws.cell(row=6, column=8, value="更新日時：なごみや太田")
+    today = datetime.now()
+    updater_cell = ws.cell(row=6, column=8, value=f"{today.year}/{today.month}/{today.day}　なごみや太田")
     updater_cell.font = Font(name=FONT_NAME, size=11)
     updater_cell.alignment = Alignment(wrap_text=False, horizontal="right")
 
