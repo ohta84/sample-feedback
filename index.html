@@ -500,7 +500,8 @@ async function generate() {
     setCell(ws, 3, 1, `注文転換社数：${nConverted}社`, { border: false, alignment: { wrapText: false } });
     setCell(ws, 4, 1, `注文転換率：${(rate * 100).toFixed(1)}%`, { font: { bold: true, color: { argb: "FFFF0000" } }, border: false, alignment: { wrapText: false } });
     setCell(ws, 6, 1, periodStr, { border: false, alignment: { wrapText: false } });
-    setCell(ws, 6, 8, "更新日時：なごみや太田", { border: false, alignment: { wrapText: false, horizontal: "right" } });
+    const today = new Date();
+    setCell(ws, 6, 8, `${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()}　なごみや太田`, { border: false, alignment: { wrapText: false, horizontal: "right" } });
 
     const headers = ["納品日", "業態", "会社名", "配送先都道府県", "商品名", "サンプル用途", "サンプル評価結果", "注文有無"];
     const headerRow = 7;
