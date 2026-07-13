@@ -223,6 +223,31 @@ function countKeyword(text, kw) {
   return String(text).split(kw).length - 1;
 }
 
+const FREE_TEXT_NG_KEYWORDS = ["不採用", "見送り", "見送る", "お断り", "断念", "不要", "非導入"];
+const FREE_TEXT_OK_KEYWORDS = ["採用", "注文します", "注文したい", "発注", "導入", "欲しい", "希望"];
+
+// 1受注ぶんの評価コメントからOK/NG/検討中の件数を判定する
+// 優先順位:
+// 1. 文章内にOK/NG/検討中の明示的な表記がある -> その出現回数をそのまま使う
+// 2. 「評価都合／採用数」が数字（スラッシュを含まない）-> 採用数=OK、残り(商品行数-採用数)=NG
+// 3. 「7/8」のようにスラッシュを含む値（日付の書き間違い、無視する）-> 4へ
+// 4. 自由記述のみ -> 採用を示す語があればOK、不採用を示す語があればNG、それ以外は検討中
+function classifyEvaluation(text, adoptRaw, nProducts) {
+  text = text || "";
+  if (text.includes("OK") || text.includes("NG") || text.includes("検討中")) {
+    return [countKeyword(text, "OK"), countKeyword(text, "NG"), countKeyword(text, "検討中")];
+  }
+  const adopt = String(adoptRaw || "").trim();
+  if (adopt && !adopt.includes("/") && /^\d+$/.test(adopt)) {
+    const adopted = parseInt(adopt, 10);
+    const notAdopted = Math.max(nProducts - adopted, 0);
+    return [adopted, notAdopted, 0];
+  }
+  if (FREE_TEXT_NG_KEYWORDS.some(kw => text.includes(kw))) return [0, 1, 0];
+  if (FREE_TEXT_OK_KEYWORDS.some(kw => text.includes(kw))) return [1, 0, 0];
+  return [0, 0, 1];
+}
+
 function toNumber(value) {
   const s = String(value == null ? "" : value).trim().replace(/,/g, "");
   if (s === "" || s === "nan") return 0;
@@ -428,12 +453,22 @@ async function generate() {
       bizStats[t].提供 += 1;
       if (companiesWithOrder.has(c)) bizStats[t].転換 += 1;
     }
+    // 受注番号単位でグループ化して1受注につき1回だけ評価を判定する
+    const byOrderNo = new Map();
     for (const r of df) {
-      const t = companyType[r.__company] || "(不明)";
-      const text = o_result ? String(r[o_result] || "") : "";
-      bizStats[t].OK += countKeyword(text, "OK");
-      bizStats[t].NG += countKeyword(text, "NG");
-      bizStats[t].検討中 += countKeyword(text, "検討中");
+      const key = r[o_orderno];
+      if (!byOrderNo.has(key)) byOrderNo.set(key, []);
+      byOrderNo.get(key).push(r);
+    }
+    for (const rows of byOrderNo.values()) {
+      const first = rows[0];
+      const t = companyType[first.__company] || "(不明)";
+      const text = o_result ? String(first[o_result] || "") : "";
+      const adoptRaw = o_adopt ? String(first[o_adopt] || "") : "";
+      const [ok, ng, kento] = classifyEvaluation(text, adoptRaw, rows.length);
+      bizStats[t].OK += ok;
+      bizStats[t].NG += ng;
+      bizStats[t].検討中 += kento;
     }
 
     // 受注データ分析（通常注文ベース、金額は含めない）
