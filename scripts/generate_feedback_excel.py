@@ -126,6 +126,40 @@ def detect_maker_code(series_of_product_names):
     return pd.Series(codes).value_counts().idxmax()
 
 
+FREE_TEXT_NG_KEYWORDS = ["不採用", "見送り", "見送る", "お断り", "断念", "不要", "非導入"]
+FREE_TEXT_OK_KEYWORDS = ["採用", "注文します", "注文したい", "発注", "導入", "欲しい", "希望"]
+
+
+def classify_evaluation(text, adopt_raw, n_products):
+    """
+    1つの受注（評価コメント1件）についてOK/NG/検討中の件数を判定する。
+    戻り値: (ok_count, ng_count, kento_count)
+
+    優先順位:
+    1. 文章内にOK/NG/検討中の明示的な表記がある -> その出現回数をそのまま使う
+    2. 「評価都合／採用数」が数字（スラッシュを含まない）-> 採用数=OK、
+       残り（同一受注内の商品行数－採用数）=NG
+    3. 「7/8」のようにスラッシュを含む値（日付の書き間違い、無視する）-> 4へ
+    4. 自由記述のみ -> 採用を示す語があればOK、不採用を示す語があればNG、
+       それ以外は検討中（該当した1区分のみ+1、他は0）
+    """
+    text = text or ""
+    if any(kw in text for kw in ("OK", "NG", "検討中")):
+        return (count_keyword(text, "OK"), count_keyword(text, "NG"), count_keyword(text, "検討中"))
+
+    if adopt_raw and "/" not in adopt_raw and adopt_raw.strip().isdigit():
+        adopted = int(adopt_raw.strip())
+        not_adopted = max(n_products - adopted, 0)
+        return (adopted, not_adopted, 0)
+
+    # 自由記述のみ（採用数が無い、または日付らしきスラッシュ表記で無視）
+    if any(kw in text for kw in FREE_TEXT_NG_KEYWORDS):
+        return (0, 1, 0)
+    if any(kw in text for kw in FREE_TEXT_OK_KEYWORDS):
+        return (1, 0, 0)
+    return (0, 0, 1)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--order-csv", required=True, help="Bカート受注CSV（1本で完結）")
@@ -243,12 +277,16 @@ def main():
         if c in companies_with_order:
             s["転換"] += 1
 
-    for _, row in df.iterrows():
-        t = company_type.get(row["_company"], "(不明)")
-        text = str(row.get(o_result, "")) if o_result else ""
-        biz_stats[t]["OK件数"] += count_keyword(text, "OK")
-        biz_stats[t]["NG件数"] += count_keyword(text, "NG")
-        biz_stats[t]["検討中件数"] += count_keyword(text, "検討中")
+    for group_orderno, g in df.groupby(o_orderno):
+        first = g.iloc[0]
+        c = first["_company"]
+        t = company_type.get(c, "(不明)")
+        text = str(first.get(o_result, "")) if o_result else ""
+        adopt_raw = str(first.get(o_adopt, "")).strip() if o_adopt else ""
+        ok, ng, kento = classify_evaluation(text, adopt_raw, len(g))
+        biz_stats[t]["OK件数"] += ok
+        biz_stats[t]["NG件数"] += ng
+        biz_stats[t]["検討中件数"] += kento
 
     # ---------------- 受注データ分析（通常注文ベース、金額は含めない） ----------------
     df_normal = df_order[~df_order["_is_sample"]].copy()
