@@ -162,13 +162,18 @@ def classify_evaluation(text, adopt_raw, n_products):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--order-csv", required=True, help="Bカート受注CSV（1本で完結）")
+    ap.add_argument("--order-csv", required=True, nargs="+",
+                     help="Bカート受注CSV（1本で完結。500件制限などで複数ファイルに分かれる場合はスペース区切りで複数指定可。同じ内容を結合して処理する）")
     ap.add_argument("--maker-name", default=None, help="省略時はCSVから自動検出したメーカーコードとdata/maker_codes.csvから自動解決")
     ap.add_argument("--maker-code", default=None, help="省略時はCSVの商品名から自動検出。カンマ区切りで複数指定可")
     ap.add_argument("--output", default=None, help="省略時は '{コード}{会社名}様サンプルフィードバック.xlsx' を自動生成")
     args = ap.parse_args()
 
-    df_order = read_csv_flexible(args.order_csv)
+    df_parts = [read_csv_flexible(p) for p in args.order_csv]
+    df_order = pd.concat(df_parts, ignore_index=True) if len(df_parts) > 1 else df_parts[0]
+    # 複数ファイルにまたがる場合、受注番号+商品名で完全重複する行があれば1件に統一する
+    if len(df_parts) > 1:
+        df_order = df_order.drop_duplicates(ignore_index=True)
 
     o_date = find_column(df_order, HEADER_KEYWORDS["納品日"])
     o_type = find_column(df_order, HEADER_KEYWORDS["業態"])
@@ -259,7 +264,7 @@ def main():
     groups = []
     for (company, date_val), g in df_sorted.groupby(["_company", o_date], sort=False):
         groups.append((company, date_val, g))
-    groups.sort(key=lambda x: (x[0], parse_date(x[1]) or datetime.max))
+    groups.sort(key=lambda x: (parse_date(x[1]) or datetime.max, x[0]))
 
     # ---------------- 業態別分析用の集計 ----------------
     company_type = {}
@@ -315,7 +320,7 @@ def main():
     def set_row(row_idx, text, bold=False, size=11, color=None):
         cell = ws.cell(row=row_idx, column=1, value=text)
         cell.font = Font(name=FONT_NAME, size=size, bold=bold, color=color)
-        cell.alignment = Alignment(wrap_text=False)
+        cell.alignment = Alignment(vertical="center", wrap_text=False)
         return cell
 
     set_row(1, f"{args.maker_name}様サンプルフィードバック", bold=True, size=18)
@@ -327,7 +332,7 @@ def main():
     today = datetime.now()
     updater_cell = ws.cell(row=6, column=8, value=f"{today.year}/{today.month}/{today.day}　なごみや太田")
     updater_cell.font = Font(name=FONT_NAME, size=11)
-    updater_cell.alignment = Alignment(wrap_text=False, horizontal="right")
+    updater_cell.alignment = Alignment(vertical="center", wrap_text=False, horizontal="right")
 
     headers = ["納品日", "業態", "会社名", "配送先都道府県", "商品名", "サンプル用途", "サンプル評価結果", "注文有無"]
     header_row = 7
@@ -335,7 +340,7 @@ def main():
         c = ws.cell(row=header_row, column=i, value=h)
         c.font = Font(name=FONT_NAME, size=11, bold=True)
         c.fill = GREY_FILL
-        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.border = BORDER_ALL
 
     row_ptr = header_row + 1
@@ -404,7 +409,7 @@ def main():
         c = ws2.cell(row=1, column=i, value=h)
         c.font = Font(name=FONT_NAME, size=11, bold=True)
         c.fill = GREY_FILL
-        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.border = BORDER_ALL
 
     sorted_biz = sorted(biz_stats.items(), key=lambda kv: kv[1]["提供"], reverse=True)
@@ -415,6 +420,7 @@ def main():
             cell = ws2.cell(row=r, column=i, value=v)
             cell.font = Font(name=FONT_NAME, size=11)
             cell.border = BORDER_ALL
+            cell.alignment = Alignment(vertical="center")
             if i == 4:
                 cell.number_format = "0.0%"
 
@@ -434,7 +440,7 @@ def main():
         c = ws3.cell(row=2, column=i, value=h)
         c.font = Font(name=FONT_NAME, size=11, bold=True)
         c.fill = GREY_FILL
-        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.border = BORDER_ALL
 
     sorted_order_biz = sorted(order_biz_stats.items(), key=lambda kv: kv[1]["件数"], reverse=True)
@@ -446,6 +452,7 @@ def main():
             cell = ws3.cell(row=r, column=i, value=v)
             cell.font = Font(name=FONT_NAME, size=11)
             cell.border = BORDER_ALL
+            cell.alignment = Alignment(vertical="center")
         r += 1
 
     table2_start = r + 2
@@ -455,7 +462,7 @@ def main():
         c = ws3.cell(row=table2_start + 1, column=i, value=h)
         c.font = Font(name=FONT_NAME, size=11, bold=True)
         c.fill = GREY_FILL
-        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.border = BORDER_ALL
 
     sorted_products = sorted(product_stats.items(), key=lambda kv: kv[1]["数量"], reverse=True)[:10]
