@@ -92,38 +92,17 @@
 <div class="wrap">
   <h1>サンプルフィードバックExcel自動生成</h1>
   <p class="lead">
-    Bカートの受注CSV（1本）をアップロードすると、メーカー別のサンプルフィードバックExcelを
+    Bカートの受注CSVをアップロードすると、メーカー別のサンプルフィードバックExcelを
     ブラウザ内で生成してダウンロードできます。ファイルはサーバーに送信されず、
     すべてこの画面の中だけで処理されます。
   </p>
 
   <div class="card">
-    <h2>① 受注CSV</h2>
+    <h2>受注CSV</h2>
     <div class="field">
       <label for="orderCsv">Bカート受注CSV</label>
-      <div class="hint">受注番号・業態・配送先都道府県・セット名・サンプル用途・サンプル評価結果などを含む全項目版CSV。これ1本でOKです</div>
-      <input type="file" id="orderCsv" accept=".csv">
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>② メーカー情報（省略可）</h2>
-    <div class="hint" style="margin-bottom:14px;">
-      通常は入力不要です。CSVの商品名（例: [138]）からメーカーコードを自動検出し、
-      コード表（data/maker_codes.csv）からメーカー名も自動で決まります。
-      複数メーカーが混ざったCSVの場合や、コード表に無いメーカーの場合のみ入力してください。
-    </div>
-    <div class="row2">
-      <div class="field">
-        <label for="makerCode">メーカーコード（任意）</label>
-        <div class="hint">複数メーカーが混在するCSVを絞り込みたいときだけ入力。カンマ区切りで複数可</div>
-        <input type="text" id="makerCode" placeholder="自動検出（未入力でOK）">
-      </div>
-      <div class="field">
-        <label for="makerName">メーカー名（任意）</label>
-        <div class="hint">コード表に無い場合や、表示名を変えたいときだけ入力</div>
-        <input type="text" id="makerName" placeholder="自動解決（未入力でOK）">
-      </div>
+      <div class="hint">受注番号・業態・配送先都道府県・セット名・サンプル用途・サンプル評価結果などを含む全項目版CSV。500件制限などで複数ファイルに分かれる場合は、複数選択してアップロードしてください（自動的に結合されます）</div>
+      <input type="file" id="orderCsv" accept=".csv" multiple>
     </div>
   </div>
 
@@ -309,20 +288,20 @@ function setCell(ws, rowIdx, colIdx, value, opts) {
   opts = opts || {};
   cell.font = Object.assign({ name: FONT_NAME, size: 11 }, opts.font || {});
   if (opts.fill) cell.fill = opts.fill;
-  cell.alignment = Object.assign({ vertical: "center", wrapText: true }, opts.alignment || {});
+  cell.alignment = Object.assign({ vertical: "middle", wrapText: true }, opts.alignment || {});
   if (opts.border !== false) cell.border = BORDER_ALL;
   if (opts.numFmt) cell.numFmt = opts.numFmt;
   return cell;
 }
 
 async function generate() {
-  const orderFile = document.getElementById("orderCsv").files[0];
-  const makerCodeStr = document.getElementById("makerCode").value.trim();
-  let makerName = document.getElementById("makerName").value.trim();
+  const orderFiles = Array.from(document.getElementById("orderCsv").files || []);
+  const makerCodeStr = "";
+  let makerName = "";
 
   document.getElementById("summary").style.display = "none";
 
-  if (!orderFile) {
+  if (orderFiles.length === 0) {
     setStatus("受注CSVを選択してください。", "err");
     return;
   }
@@ -332,9 +311,21 @@ async function generate() {
   setStatus("CSVを読み込み中...", "");
 
   try {
-    const orderText = await decodeFile(orderFile);
-    const orderParsed = parseCsvText(orderText);
-    const oh = orderParsed.headers;
+    const decodedTexts = await Promise.all(orderFiles.map(f => decodeFile(f)));
+    const parsedList = decodedTexts.map(t => parseCsvText(t));
+    const oh = parsedList[0].headers;
+    let orderRowsAll = parsedList.flatMap(p => p.rows);
+    if (parsedList.length > 1) {
+      // 複数ファイルにまたがる完全重複行を除去
+      const seen = new Set();
+      orderRowsAll = orderRowsAll.filter(r => {
+        const key = JSON.stringify(r);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+    const orderParsed = { rows: orderRowsAll, headers: oh };
 
     const o_date = findColumn(oh, HEADER_KEYWORDS["納品日"]);
     const o_type = findColumn(oh, HEADER_KEYWORDS["業態"]);
@@ -421,7 +412,7 @@ async function generate() {
       periodStr = `${formatDateJP(minD)}〜${formatDateJP(maxD)}`;
     }
 
-    // グループ化 (会社名 + 納品日)
+    // グループ化のため、まず会社名+納品日で行を隣接させておく
     df.sort((a, b) => {
       if (a.__company !== b.__company) return a.__company < b.__company ? -1 : 1;
       const ad = a.__dateParsed ? a.__dateParsed.getTime() : Infinity;
@@ -440,6 +431,13 @@ async function generate() {
       }
       curGroup.rows.push(r);
     }
+    // 表示順は納品日の昇順（同じ日付なら会社名順）にする
+    groups.sort((a, b) => {
+      const ad = parseDateJP(a.dateVal) ? parseDateJP(a.dateVal).getTime() : Infinity;
+      const bd = parseDateJP(b.dateVal) ? parseDateJP(b.dateVal).getTime() : Infinity;
+      if (ad !== bd) return ad - bd;
+      return a.company < b.company ? -1 : (a.company > b.company ? 1 : 0);
+    });
 
     // 業態別分析
     const companyType = {};
@@ -537,7 +535,7 @@ async function generate() {
       const colIndexOf = { A: 1, B: 2, C: 3, D: 4, F: 6, G: 7, H: 8 };
       for (const [letter, value] of Object.entries(mergedValues)) {
         const colIdx = colIndexOf[letter];
-        const opts = { alignment: { vertical: "center", wrapText: true } };
+        const opts = { alignment: { vertical: "middle", wrapText: true } };
         if (letter === "H" && hasOrder) {
           opts.font = { bold: true, color: { argb: "FF375623" } };
           opts.fill = GREEN_FILL;
