@@ -162,6 +162,11 @@ function extractMakerCode(productName) {
   return m ? m[1] : null;
 }
 
+// 商品名冒頭の [141] のようなメーカーコード表記を除去する（提出先はメーカー自身なので不要）
+function stripMakerCode(productName) {
+  return String(productName || "").replace(/^\s*\[\d+\]\s*/, "").trim();
+}
+
 function detectMakerCode(productNames) {
   const counts = {};
   for (const p of productNames) {
@@ -679,7 +684,7 @@ async function generate() {
       const bizRows = Object.entries(orderBizStats).sort((a, b) => b[1].件数 - a[1].件数)
         .map(([biz, s]) => [biz, s.companies.size, s.件数, s.数量]);
       const productRows = Object.entries(productStats).sort((a, b) => b[1].数量 - a[1].数量).slice(0, 10)
-        .map(([product, s]) => [product, s.数量, s.companies.size]);
+        .map(([product, s]) => [stripMakerCode(product), s.数量, s.companies.size]);
       const companyRows = Object.entries(companyStats).sort((a, b) => b[1].数量 - a[1].数量).slice(0, 10)
         .map(([company, s]) => [company, s.業態, s.数量, s.件数]);
       return { bizRows, productRows, companyRows };
@@ -712,11 +717,11 @@ async function generate() {
         const { orderBizStats, productStats, companyStats } = computeOrderStats(normalRowsY);
         const { productRows } = orderStatsRows(orderBizStats, productStats, companyStats);
         const title = y === null ? "商品別ランキング（通常注文・数量順、上位10件）" : `${y}年 商品別ランキング（上位10件）`;
-        const endRow = writeOneTable(ws3, rowCursor, col, title, ["商品名", "受注数量合計", "購入社数"], productRows, [], [0]);
+        const endRow = writeOneTable(ws3, rowCursor, col, title, ["商品名", "受注数量合計", "購入社数"], productRows);
         sectionEnd = Math.max(sectionEnd, endRow);
         col += PRODUCT_WIDTH + GAP;
       }
-      setRepeatedWidths(ws3, 1, PRODUCT_WIDTH, [40, 14, 12], yearsForOrder.length);
+      setRepeatedWidths(ws3, 1, PRODUCT_WIDTH, [46, 14, 12], yearsForOrder.length);
       rowCursor = sectionEnd + 2;
     }
 
@@ -729,7 +734,7 @@ async function generate() {
         const { orderBizStats, productStats, companyStats } = computeOrderStats(normalRowsY);
         const { companyRows } = orderStatsRows(orderBizStats, productStats, companyStats);
         const title = y === null ? "会社別ランキング（通常注文・数量順、上位10社）" : `${y}年 会社別ランキング（上位10社）`;
-        const endRow = writeOneTable(ws3, rowCursor, col, title, ["会社名", "業態", "受注数量合計", "受注件数"], companyRows, [], [0]);
+        const endRow = writeOneTable(ws3, rowCursor, col, title, ["会社名", "業態", "受注数量合計", "受注件数"], companyRows);
         sectionEnd = Math.max(sectionEnd, endRow);
         col += COMPANY_WIDTH + GAP;
       }
