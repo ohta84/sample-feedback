@@ -479,22 +479,26 @@ def main():
     PRODUCT_WIDTH = 3        # 商品名, 受注数量合計, 購入社数
     COMPANY_WIDTH = 4        # 会社名, 業態, 受注数量合計, 受注件数
     GAP = 1                  # ブロック間の空白列数
+    # シート3は3種類の表（業態別受注動向・商品別ランキング・会社別ランキング）が
+    # 縦に並ぶが、年ブロックの「列位置」はどの表も揃える必要がある。
+    # 表ごとに列幅設定が異なる列オフセットを上書きし合わないよう、
+    # 3つの表すべてで同じストライド（最大の表幅+GAP）を使う。
+    ORDER_STRIDE = max(ORDER_BIZ_WIDTH, PRODUCT_WIDTH, COMPANY_WIDTH) + GAP
 
-    def set_repeated_widths(ws, base_col, block_width, widths, n_blocks):
-        """横に並んだ複数ブロック分の列幅をまとめて設定する"""
+    def set_repeated_widths(ws, base_col, stride, widths, n_blocks):
+        """横に並んだ複数ブロック分の列幅をまとめて設定する（stride単位でブロックを配置）"""
         for b in range(n_blocks):
-            col_start = base_col + b * (block_width + GAP)
-            for i, w in enumerate(widths):
+            col_start = base_col + b * stride
+            for i in range(stride):
+                w = widths[i] if i < len(widths) else 3  # 使わない列はスペーサー幅
                 ws.column_dimensions[get_column_letter(col_start + i)].width = w
-            # ブロック間のスペーサー列
-            ws.column_dimensions[get_column_letter(col_start + block_width)].width = 3
 
     # ---------------- シート2: 業態別分析（複数年は横に並べる） ----------------
     ws2 = wb.create_sheet("業態別分析")
     if len(sample_years) <= 1:
         biz_stats_all = compute_biz_stats(df, provided_companies)
         r2_end = write_biz_table(ws2, 1, 1, biz_stats_all)
-        set_repeated_widths(ws2, 1, BIZ_TABLE_WIDTH, [16, 10, 10, 10, 12, 12, 14], 1)
+        set_repeated_widths(ws2, 1, BIZ_TABLE_WIDTH + GAP, [16, 10, 10, 10, 12, 12, 14], 1)
     else:
         col = 1
         r2_end = 1
@@ -505,7 +509,7 @@ def main():
             end_row = write_biz_table(ws2, 1, col, biz_stats_year, title=f"{y}年")
             r2_end = max(r2_end, end_row)
             col += BIZ_TABLE_WIDTH + GAP
-        set_repeated_widths(ws2, 1, BIZ_TABLE_WIDTH, [16, 10, 10, 10, 12, 12, 14], len(sample_years))
+        set_repeated_widths(ws2, 1, BIZ_TABLE_WIDTH + GAP, [16, 10, 10, 10, 12, 12, 14], len(sample_years))
 
     note = ws2.cell(row=r2_end + 1, column=1,
                      value="※OK/NG/検討中件数は評価コメント内の文字列を数えた概算値です（1コメントに複数商品分の評価が含まれる場合があります）")
@@ -542,13 +546,11 @@ def main():
         title = "業態別 受注動向（通常注文ベース）" if y is None else f"{y}年 業態別受注動向"
         end_row = write_one_table(ws3, row_cursor, col, title, ["業態", "受注社数", "受注件数", "受注数量合計"], biz_rows)
         section_end = max(section_end, end_row)
-        col += ORDER_BIZ_WIDTH + GAP
-    set_repeated_widths(ws3, 1, ORDER_BIZ_WIDTH, [22, 12, 12, 14], len(years_for_order))
+        col += ORDER_STRIDE
     row_cursor = section_end + 2
 
     # --- 表2: 商品別ランキング（年ごとに横並び） ---
     col = 1
-    section_start = row_cursor
     section_end = row_cursor
     for y in years_for_order:
         df_normal_y = df_normal if y is None else df_normal[df_normal["_year"] == y]
@@ -557,8 +559,7 @@ def main():
         title = "商品別ランキング（通常注文・数量順、上位10件）" if y is None else f"{y}年 商品別ランキング（上位10件）"
         end_row = write_one_table(ws3, row_cursor, col, title, ["商品名", "受注数量合計", "購入社数"], product_rows)
         section_end = max(section_end, end_row)
-        col += PRODUCT_WIDTH + GAP
-    set_repeated_widths(ws3, 1, PRODUCT_WIDTH, [46, 14, 12], len(years_for_order))
+        col += ORDER_STRIDE
     row_cursor = section_end + 2
 
     # --- 表3: 会社別ランキング（年ごとに横並び） ---
@@ -571,9 +572,17 @@ def main():
         title = "会社別ランキング（通常注文・数量順、上位10社）" if y is None else f"{y}年 会社別ランキング（上位10社）"
         end_row = write_one_table(ws3, row_cursor, col, title, ["会社名", "業態", "受注数量合計", "受注件数"], company_rows)
         section_end = max(section_end, end_row)
-        col += COMPANY_WIDTH + GAP
-    set_repeated_widths(ws3, 1, COMPANY_WIDTH, [26, 16, 14, 12], len(years_for_order))
+        col += ORDER_STRIDE
     row_cursor = section_end
+
+    # 3つの表は同じ列位置を共有するため、列幅は各表の必要幅の最大値で1回だけ設定する
+    combined_widths = [
+        max(22, 46, 26),  # 業態/商品名/会社名 列
+        max(12, 14, 16),  # 受注社数/受注数量合計/業態 列
+        max(12, 12, 14),  # 受注件数/購入社数/受注数量合計 列
+        14,                # 受注数量合計/(なし)/受注件数 列
+    ]
+    set_repeated_widths(ws3, 1, ORDER_STRIDE, combined_widths, len(years_for_order))
 
     note3 = ws3.cell(row=row_cursor + 1, column=1,
                       value="※このシートはサンプル注文を除いた「通常注文」のみを集計しています（金額は含めていません）")
