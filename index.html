@@ -646,12 +646,17 @@ async function generate() {
     const PRODUCT_WIDTH = 3;
     const COMPANY_WIDTH = 4;
     const GAP = 1;
+    // シート3は3種類の表が縦に並ぶが、年ブロックの列位置はどの表も揃える必要がある。
+    // 表ごとに列幅設定が異なる列オフセットを上書きし合わないよう、
+    // 3つの表すべてで同じストライド（最大の表幅+GAP）を使う。
+    const ORDER_STRIDE = Math.max(ORDER_BIZ_WIDTH, PRODUCT_WIDTH, COMPANY_WIDTH) + GAP;
 
-    function setRepeatedWidths(ws, baseCol, blockWidth, widths, nBlocks) {
+    function setRepeatedWidths(ws, baseCol, stride, widths, nBlocks) {
       for (let b = 0; b < nBlocks; b++) {
-        const colStart = baseCol + b * (blockWidth + GAP);
-        widths.forEach((w, i) => { ws.getColumn(colStart + i).width = w; });
-        ws.getColumn(colStart + blockWidth).width = 3;
+        const colStart = baseCol + b * stride;
+        for (let i = 0; i < stride; i++) {
+          ws.getColumn(colStart + i).width = i < widths.length ? widths[i] : 3;
+        }
       }
     }
 
@@ -661,7 +666,7 @@ async function generate() {
     if (sampleYears.length <= 1) {
       const bizStatsAll = computeBizStats(df, providedCompanies);
       r2End = writeBizTable(ws2, 1, 1, bizStatsAll);
-      setRepeatedWidths(ws2, 1, BIZ_TABLE_WIDTH, [16, 10, 10, 10, 12, 12, 14], 1);
+      setRepeatedWidths(ws2, 1, BIZ_TABLE_WIDTH + GAP, [16, 10, 10, 10, 12, 12, 14], 1);
     } else {
       let col = 1;
       for (const y of sampleYears) {
@@ -672,7 +677,7 @@ async function generate() {
         r2End = Math.max(r2End, endRow);
         col += BIZ_TABLE_WIDTH + GAP;
       }
-      setRepeatedWidths(ws2, 1, BIZ_TABLE_WIDTH, [16, 10, 10, 10, 12, 12, 14], sampleYears.length);
+      setRepeatedWidths(ws2, 1, BIZ_TABLE_WIDTH + GAP, [16, 10, 10, 10, 12, 12, 14], sampleYears.length);
     }
     setCell(ws2, r2End + 1, 1, "※OK/NG/検討中件数は評価コメント内の文字列を数えた概算値です（1コメントに複数商品分の評価が含まれる場合があります）", { font: { size: 9, italic: true }, border: false, alignment: { wrapText: false } });
 
@@ -702,9 +707,8 @@ async function generate() {
         const title = y === null ? "業態別 受注動向（通常注文ベース）" : `${y}年 業態別受注動向`;
         const endRow = writeOneTable(ws3, rowCursor, col, title, ["業態", "受注社数", "受注件数", "受注数量合計"], bizRows);
         sectionEnd = Math.max(sectionEnd, endRow);
-        col += ORDER_BIZ_WIDTH + GAP;
+        col += ORDER_STRIDE;
       }
-      setRepeatedWidths(ws3, 1, ORDER_BIZ_WIDTH, [22, 12, 12, 14], yearsForOrder.length);
       rowCursor = sectionEnd + 2;
     }
 
@@ -719,9 +723,8 @@ async function generate() {
         const title = y === null ? "商品別ランキング（通常注文・数量順、上位10件）" : `${y}年 商品別ランキング（上位10件）`;
         const endRow = writeOneTable(ws3, rowCursor, col, title, ["商品名", "受注数量合計", "購入社数"], productRows);
         sectionEnd = Math.max(sectionEnd, endRow);
-        col += PRODUCT_WIDTH + GAP;
+        col += ORDER_STRIDE;
       }
-      setRepeatedWidths(ws3, 1, PRODUCT_WIDTH, [46, 14, 12], yearsForOrder.length);
       rowCursor = sectionEnd + 2;
     }
 
@@ -736,11 +739,19 @@ async function generate() {
         const title = y === null ? "会社別ランキング（通常注文・数量順、上位10社）" : `${y}年 会社別ランキング（上位10社）`;
         const endRow = writeOneTable(ws3, rowCursor, col, title, ["会社名", "業態", "受注数量合計", "受注件数"], companyRows);
         sectionEnd = Math.max(sectionEnd, endRow);
-        col += COMPANY_WIDTH + GAP;
+        col += ORDER_STRIDE;
       }
-      setRepeatedWidths(ws3, 1, COMPANY_WIDTH, [26, 16, 14, 12], yearsForOrder.length);
       rowCursor = sectionEnd;
     }
+
+    // 3つの表は同じ列位置を共有するため、列幅は各表の必要幅の最大値で1回だけ設定する
+    const combinedWidths = [
+      Math.max(22, 46, 26),
+      Math.max(12, 14, 16),
+      Math.max(12, 12, 14),
+      14,
+    ];
+    setRepeatedWidths(ws3, 1, ORDER_STRIDE, combinedWidths, yearsForOrder.length);
 
     setCell(ws3, rowCursor + 1, 1, "※このシートはサンプル注文を除いた「通常注文」のみを集計しています（金額は含めていません）", { font: { size: 9, italic: true }, border: false, alignment: { wrapText: false } });
 
