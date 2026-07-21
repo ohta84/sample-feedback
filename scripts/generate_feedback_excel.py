@@ -266,7 +266,7 @@ def main():
         groups.append((company, date_val, g))
     groups.sort(key=lambda x: (parse_date(x[1]) or datetime.max, x[0]))
 
-    # ---------------- 業態別分析用の集計 ----------------
+    # ---------------- 業態別分析用の集計（年ごとに分けられるようデータを保持） ----------------
     company_type = {}
     for _, row in df.iterrows():
         c = row["_company"]
@@ -274,43 +274,61 @@ def main():
         if c not in company_type and pd.notna(t) and str(t).strip():
             company_type[c] = str(t).strip()
 
-    biz_stats = {}
-    for c in provided_companies:
-        t = company_type.get(c, "(不明)")
-        s = biz_stats.setdefault(t, {"提供": 0, "転換": 0, "OK件数": 0, "NG件数": 0, "検討中件数": 0})
-        s["提供"] += 1
-        if c in companies_with_order:
-            s["転換"] += 1
+    def compute_biz_stats(df_subset, provided_companies_subset):
+        stats = {}
+        for c in provided_companies_subset:
+            t = company_type.get(c, "(不明)")
+            s = stats.setdefault(t, {"提供": 0, "転換": 0, "OK件数": 0, "NG件数": 0, "検討中件数": 0})
+            s["提供"] += 1
+            if c in companies_with_order:
+                s["転換"] += 1
+        for group_orderno, g in df_subset.groupby(o_orderno):
+            first = g.iloc[0]
+            c = first["_company"]
+            t = company_type.get(c, "(不明)")
+            text = str(first.get(o_result, "")) if o_result else ""
+            adopt_raw = str(first.get(o_adopt, "")).strip() if o_adopt else ""
+            ok, ng, kento = classify_evaluation(text, adopt_raw, len(g))
+            stats[t]["OK件数"] += ok
+            stats[t]["NG件数"] += ng
+            stats[t]["検討中件数"] += kento
+        return stats
 
-    for group_orderno, g in df.groupby(o_orderno):
-        first = g.iloc[0]
-        c = first["_company"]
-        t = company_type.get(c, "(不明)")
-        text = str(first.get(o_result, "")) if o_result else ""
-        adopt_raw = str(first.get(o_adopt, "")).strip() if o_adopt else ""
-        ok, ng, kento = classify_evaluation(text, adopt_raw, len(g))
-        biz_stats[t]["OK件数"] += ok
-        biz_stats[t]["NG件数"] += ng
-        biz_stats[t]["検討中件数"] += kento
+    # サンプル提供の年ごとに会社を分類（同じ会社が複数年にまたがる場合はそれぞれの年でカウント）
+    df["_year"] = df["_date_parsed"].apply(lambda d: d.year if d else None)
+    sample_years = sorted({y for y in df["_year"] if y is not None})
 
     # ---------------- 受注データ分析（通常注文ベース、金額は含めない） ----------------
     df_normal = df_order[~df_order["_is_sample"]].copy()
     df_normal["_qty"] = df_normal[o_qty].apply(to_number) if o_qty else 0.0
+    df_normal["_date_parsed"] = df_normal[o_date].apply(parse_date)
+    df_normal["_year"] = df_normal["_date_parsed"].apply(lambda d: d.year if d else None)
+    order_years = sorted({y for y in df_normal["_year"] if y is not None})
 
-    order_biz_stats = {}
-    for _, row in df_normal.iterrows():
-        t = str(row[o_type]).strip() if o_type and str(row[o_type]).strip() else "(不明)"
-        s = order_biz_stats.setdefault(t, {"companies": set(), "件数": 0, "数量": 0.0})
-        s["companies"].add(str(row[o_company]))
-        s["件数"] += 1
-        s["数量"] += row["_qty"]
+    def compute_order_stats(df_normal_subset):
+        order_biz_stats = {}
+        for _, row in df_normal_subset.iterrows():
+            t = str(row[o_type]).strip() if o_type and str(row[o_type]).strip() else "(不明)"
+            s = order_biz_stats.setdefault(t, {"companies": set(), "件数": 0, "数量": 0.0})
+            s["companies"].add(str(row[o_company]))
+            s["件数"] += 1
+            s["数量"] += row["_qty"]
 
-    product_stats = {}
-    for _, row in df_normal.iterrows():
-        p = str(row[o_product]).strip()
-        s = product_stats.setdefault(p, {"companies": set(), "数量": 0.0})
-        s["companies"].add(str(row[o_company]))
-        s["数量"] += row["_qty"]
+        product_stats = {}
+        for _, row in df_normal_subset.iterrows():
+            p = str(row[o_product]).strip()
+            s = product_stats.setdefault(p, {"companies": set(), "数量": 0.0})
+            s["companies"].add(str(row[o_company]))
+            s["数量"] += row["_qty"]
+
+        company_stats = {}
+        for _, row in df_normal_subset.iterrows():
+            c = str(row[o_company]).strip()
+            s = company_stats.setdefault(c, {"業態": str(row[o_type]).strip() if o_type else "", "数量": 0.0, "件数": 0})
+            s["数量"] += row["_qty"]
+            s["件数"] += 1
+
+        return order_biz_stats, product_stats, company_stats
 
     # ---------------- Excel生成 ----------------
     wb = Workbook()
@@ -402,84 +420,115 @@ def main():
     for col_letter, width in COLUMN_WIDTHS.items():
         ws.column_dimensions[col_letter].width = width
 
-    # ---------------- シート2: 業態別分析 ----------------
-    ws2 = wb.create_sheet("業態別分析")
-    headers2 = ["業態", "提供社数", "転換社数", "転換率", "OK件数(概算)", "NG件数(概算)", "検討中件数(概算)"]
-    for i, h in enumerate(headers2, start=1):
-        c = ws2.cell(row=1, column=i, value=h)
-        c.font = Font(name=FONT_NAME, size=11, bold=True)
-        c.fill = GREY_FILL
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = BORDER_ALL
+    # ---------------- シート2・3で使う共通ヘルパー ----------------
+    def write_header_row(ws, row_idx, headers):
+        for i, h in enumerate(headers, start=1):
+            c = ws.cell(row=row_idx, column=i, value=h)
+            c.font = Font(name=FONT_NAME, size=11, bold=True)
+            c.fill = GREY_FILL
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            c.border = BORDER_ALL
 
-    sorted_biz = sorted(biz_stats.items(), key=lambda kv: kv[1]["提供"], reverse=True)
-    for r, (biz, s) in enumerate(sorted_biz, start=2):
-        biz_rate = (s["転換"] / s["提供"]) if s["提供"] else 0
-        values = [biz, s["提供"], s["転換"], biz_rate, s["OK件数"], s["NG件数"], s["検討中件数"]]
+    def write_data_row(ws, row_idx, values, pct_cols=(), wrap_cols=()):
         for i, v in enumerate(values, start=1):
-            cell = ws2.cell(row=r, column=i, value=v)
+            cell = ws.cell(row=row_idx, column=i, value=v)
             cell.font = Font(name=FONT_NAME, size=11)
             cell.border = BORDER_ALL
-            cell.alignment = Alignment(vertical="center")
-            if i == 4:
+            cell.alignment = Alignment(vertical="center", wrap_text=(i in wrap_cols))
+            if i in pct_cols:
                 cell.number_format = "0.0%"
+
+    def write_biz_table(ws, start_row, biz_stats, title=None):
+        r = start_row
+        if title:
+            ws.cell(row=r, column=1, value=title).font = Font(name=FONT_NAME, size=13, bold=True)
+            r += 1
+        headers2 = ["業態", "提供社数", "転換社数", "転換率", "OK件数(概算)", "NG件数(概算)", "検討中件数(概算)"]
+        write_header_row(ws, r, headers2)
+        r += 1
+        sorted_biz = sorted(biz_stats.items(), key=lambda kv: kv[1]["提供"], reverse=True)
+        for biz, s in sorted_biz:
+            biz_rate = (s["転換"] / s["提供"]) if s["提供"] else 0
+            values = [biz, s["提供"], s["転換"], biz_rate, s["OK件数"], s["NG件数"], s["検討中件数"]]
+            write_data_row(ws, r, values, pct_cols=(4,))
+            r += 1
+        return r
+
+    def write_order_tables(ws, start_row, order_biz_stats, product_stats, company_stats, title=None):
+        r = start_row
+        if title:
+            ws.cell(row=r, column=1, value=title).font = Font(name=FONT_NAME, size=14, bold=True)
+            r += 1
+
+        ws.cell(row=r, column=1, value="業態別 受注動向（通常注文ベース）").font = Font(name=FONT_NAME, size=13, bold=True)
+        r += 1
+        write_header_row(ws, r, ["業態", "受注社数", "受注件数", "受注数量合計"])
+        r += 1
+        sorted_order_biz = sorted(order_biz_stats.items(), key=lambda kv: kv[1]["件数"], reverse=True)
+        for biz, s in sorted_order_biz:
+            write_data_row(ws, r, [biz, len(s["companies"]), s["件数"], s["数量"]])
+            r += 1
+
+        r += 2
+        ws.cell(row=r, column=1, value="商品別ランキング（通常注文・数量順、上位10件）").font = Font(name=FONT_NAME, size=13, bold=True)
+        r += 1
+        write_header_row(ws, r, ["商品名", "受注数量合計", "購入社数"])
+        r += 1
+        sorted_products = sorted(product_stats.items(), key=lambda kv: kv[1]["数量"], reverse=True)[:10]
+        for product, s in sorted_products:
+            write_data_row(ws, r, [product, s["数量"], len(s["companies"])], wrap_cols=(1,))
+            r += 1
+
+        r += 2
+        ws.cell(row=r, column=1, value="会社別ランキング（通常注文・数量順、上位10社）").font = Font(name=FONT_NAME, size=13, bold=True)
+        r += 1
+        write_header_row(ws, r, ["会社名", "業態", "受注数量合計", "受注件数"])
+        r += 1
+        sorted_companies = sorted(company_stats.items(), key=lambda kv: kv[1]["数量"], reverse=True)[:10]
+        for company, s in sorted_companies:
+            write_data_row(ws, r, [company, s["業態"], s["数量"], s["件数"]], wrap_cols=(1,))
+            r += 1
+
+        return r
+
+    # ---------------- シート2: 業態別分析 ----------------
+    ws2 = wb.create_sheet("業態別分析")
+    r2 = 1
+    if len(sample_years) <= 1:
+        biz_stats_all = compute_biz_stats(df, provided_companies)
+        r2 = write_biz_table(ws2, r2, biz_stats_all)
+    else:
+        for y in sample_years:
+            companies_in_year = sorted(set(df.loc[df["_year"] == y, "_company"]))
+            df_year = df[df["_year"] == y]
+            biz_stats_year = compute_biz_stats(df_year, companies_in_year)
+            r2 = write_biz_table(ws2, r2, biz_stats_year, title=f"{y}年")
+            r2 += 2
 
     for col_letter, width in {"A": 16, "B": 10, "C": 10, "D": 10, "E": 12, "F": 12, "G": 14}.items():
         ws2.column_dimensions[col_letter].width = width
 
-    note = ws2.cell(row=len(sorted_biz) + 3, column=1,
+    note = ws2.cell(row=r2 + 1, column=1,
                      value="※OK/NG/検討中件数は評価コメント内の文字列を数えた概算値です（1コメントに複数商品分の評価が含まれる場合があります）")
     note.font = Font(name=FONT_NAME, size=9, italic=True)
 
     # ---------------- シート3: 受注データ分析 ----------------
     ws3 = wb.create_sheet("受注データ分析")
-
-    ws3.cell(row=1, column=1, value="業態別 受注動向（通常注文ベース）").font = Font(name=FONT_NAME, size=13, bold=True)
-    headers3a = ["業態", "受注社数", "受注件数", "受注数量合計"]
-    for i, h in enumerate(headers3a, start=1):
-        c = ws3.cell(row=2, column=i, value=h)
-        c.font = Font(name=FONT_NAME, size=11, bold=True)
-        c.fill = GREY_FILL
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = BORDER_ALL
-
-    sorted_order_biz = sorted(order_biz_stats.items(), key=lambda kv: kv[1]["件数"], reverse=True)
-    r = 3
-    for biz, s in sorted_order_biz:
-        n_companies = len(s["companies"])
-        values = [biz, n_companies, s["件数"], s["数量"]]
-        for i, v in enumerate(values, start=1):
-            cell = ws3.cell(row=r, column=i, value=v)
-            cell.font = Font(name=FONT_NAME, size=11)
-            cell.border = BORDER_ALL
-            cell.alignment = Alignment(vertical="center")
-        r += 1
-
-    table2_start = r + 2
-    ws3.cell(row=table2_start, column=1, value="商品別ランキング（通常注文・数量順、上位10件）").font = Font(name=FONT_NAME, size=13, bold=True)
-    headers3b = ["商品名", "受注数量合計", "購入社数"]
-    for i, h in enumerate(headers3b, start=1):
-        c = ws3.cell(row=table2_start + 1, column=i, value=h)
-        c.font = Font(name=FONT_NAME, size=11, bold=True)
-        c.fill = GREY_FILL
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = BORDER_ALL
-
-    sorted_products = sorted(product_stats.items(), key=lambda kv: kv[1]["数量"], reverse=True)[:10]
-    r = table2_start + 2
-    for product, s in sorted_products:
-        values = [product, s["数量"], len(s["companies"])]
-        for i, v in enumerate(values, start=1):
-            cell = ws3.cell(row=r, column=i, value=v)
-            cell.font = Font(name=FONT_NAME, size=11)
-            cell.alignment = Alignment(wrap_text=True, vertical="center")
-            cell.border = BORDER_ALL
-        r += 1
+    r3 = 1
+    if len(order_years) <= 1:
+        order_biz_stats, product_stats, company_stats = compute_order_stats(df_normal)
+        r3 = write_order_tables(ws3, r3, order_biz_stats, product_stats, company_stats)
+    else:
+        for y in order_years:
+            df_normal_year = df_normal[df_normal["_year"] == y]
+            order_biz_stats, product_stats, company_stats = compute_order_stats(df_normal_year)
+            r3 = write_order_tables(ws3, r3, order_biz_stats, product_stats, company_stats, title=f"{y}年")
+            r3 += 2
 
     for col_letter, width in {"A": 45, "B": 14, "C": 14, "D": 12}.items():
         ws3.column_dimensions[col_letter].width = width
 
-    note3 = ws3.cell(row=r + 2, column=1,
+    note3 = ws3.cell(row=r3 + 1, column=1,
                       value="※このシートはサンプル注文を除いた「通常注文」のみを集計しています（金額は含めていません）")
     note3.font = Font(name=FONT_NAME, size=9, italic=True)
 
