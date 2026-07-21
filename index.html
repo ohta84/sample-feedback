@@ -587,117 +587,157 @@ async function generate() {
     });
 
     // ---------------- シート2・3で使う共通ヘルパー ----------------
-    function writeHeaderRow(ws, rowIdx, headers) {
+    function colLetter(n) {
+      // 1-indexed列番号からA1形式の列文字を返す（getCellが数値を受け付けるのでexceljsでは基本不要だが、column_dimensionsはgetColumnで数値も可）
+      return n;
+    }
+    function writeHeaderRow(ws, rowIdx, colOffset, headers) {
       headers.forEach((h, i) => {
-        setCell(ws, rowIdx, i + 1, h, { font: { bold: true }, fill: GREY_FILL, alignment: { horizontal: "center", wrapText: true } });
+        setCell(ws, rowIdx, colOffset + i, h, { font: { bold: true }, fill: GREY_FILL, alignment: { horizontal: "center", wrapText: true } });
       });
     }
-    function writeDataRow(ws, rowIdx, values, pctCols, wrapCols) {
+    function writeDataRow(ws, rowIdx, colOffset, values, pctCols, wrapCols) {
       pctCols = pctCols || [];
       wrapCols = wrapCols || [];
       values.forEach((v, idx) => {
-        const col = idx + 1;
-        const opts = { alignment: { wrapText: wrapCols.includes(col) } };
-        if (pctCols.includes(col)) opts.numFmt = "0.0%";
-        setCell(ws, rowIdx, col, v, opts);
+        const opts = { alignment: { wrapText: wrapCols.includes(idx) } };
+        if (pctCols.includes(idx)) opts.numFmt = "0.0%";
+        setCell(ws, rowIdx, colOffset + idx, v, opts);
       });
     }
-    function writeBizTable(ws, startRow, bizStats, title) {
+    function writeBizTable(ws, startRow, colOffset, bizStats, title) {
       let r = startRow;
       if (title) {
-        setCell(ws, r, 1, title, { font: { bold: true, size: 13 }, border: false, alignment: { wrapText: false } });
+        setCell(ws, r, colOffset, title, { font: { bold: true, size: 13 }, border: false, alignment: { wrapText: false } });
         r += 1;
       }
-      writeHeaderRow(ws, r, ["業態", "提供社数", "転換社数", "転換率", "OK件数(概算)", "NG件数(概算)", "検討中件数(概算)"]);
+      writeHeaderRow(ws, r, colOffset, ["業態", "提供社数", "転換社数", "転換率", "OK件数(概算)", "NG件数(概算)", "検討中件数(概算)"]);
       r += 1;
       const sortedBiz = Object.entries(bizStats).sort((a, b) => b[1].提供 - a[1].提供);
       for (const [biz, s] of sortedBiz) {
         const bizRate = s.提供 ? s.転換 / s.提供 : 0;
-        writeDataRow(ws, r, [biz, s.提供, s.転換, bizRate, s.OK, s.NG, s.検討中], [4]);
+        writeDataRow(ws, r, colOffset, [biz, s.提供, s.転換, bizRate, s.OK, s.NG, s.検討中], [3]);
         r += 1;
       }
       return r;
     }
-    function writeOrderTables(ws, startRow, orderBizStats, productStats, companyStats, title) {
+    function writeOneTable(ws, startRow, colOffset, title, headers, rows, pctCols, wrapCols) {
       let r = startRow;
       if (title) {
-        setCell(ws, r, 1, title, { font: { bold: true, size: 14 }, border: false, alignment: { wrapText: false } });
+        setCell(ws, r, colOffset, title, { font: { bold: true, size: 13 }, border: false, alignment: { wrapText: false } });
         r += 1;
       }
-
-      setCell(ws, r, 1, "業態別 受注動向（通常注文ベース）", { font: { bold: true, size: 13 }, border: false, alignment: { wrapText: false } });
+      writeHeaderRow(ws, r, colOffset, headers);
       r += 1;
-      writeHeaderRow(ws, r, ["業態", "受注社数", "受注件数", "受注数量合計"]);
-      r += 1;
-      const sortedOrderBiz = Object.entries(orderBizStats).sort((a, b) => b[1].件数 - a[1].件数);
-      for (const [biz, s] of sortedOrderBiz) {
-        writeDataRow(ws, r, [biz, s.companies.size, s.件数, s.数量]);
+      for (const values of rows) {
+        writeDataRow(ws, r, colOffset, values, pctCols, wrapCols);
         r += 1;
       }
-
-      r += 2;
-      setCell(ws, r, 1, "商品別ランキング（通常注文・数量順、上位10件）", { font: { bold: true, size: 13 }, border: false, alignment: { wrapText: false } });
-      r += 1;
-      writeHeaderRow(ws, r, ["商品名", "受注数量合計", "購入社数"]);
-      r += 1;
-      const sortedProducts = Object.entries(productStats).sort((a, b) => b[1].数量 - a[1].数量).slice(0, 10);
-      for (const [product, s] of sortedProducts) {
-        writeDataRow(ws, r, [product, s.数量, s.companies.size], [], [1]);
-        r += 1;
-      }
-
-      r += 2;
-      setCell(ws, r, 1, "会社別ランキング（通常注文・数量順、上位10社）", { font: { bold: true, size: 13 }, border: false, alignment: { wrapText: false } });
-      r += 1;
-      writeHeaderRow(ws, r, ["会社名", "業態", "受注数量合計", "受注件数"]);
-      r += 1;
-      const sortedCompanies = Object.entries(companyStats).sort((a, b) => b[1].数量 - a[1].数量).slice(0, 10);
-      for (const [company, s] of sortedCompanies) {
-        writeDataRow(ws, r, [company, s.業態, s.数量, s.件数], [], [1]);
-        r += 1;
-      }
-
       return r;
     }
 
-    // シート2: 業態別分析
+    const BIZ_TABLE_WIDTH = 7;
+    const ORDER_BIZ_WIDTH = 4;
+    const PRODUCT_WIDTH = 3;
+    const COMPANY_WIDTH = 4;
+    const GAP = 1;
+
+    function setRepeatedWidths(ws, baseCol, blockWidth, widths, nBlocks) {
+      for (let b = 0; b < nBlocks; b++) {
+        const colStart = baseCol + b * (blockWidth + GAP);
+        widths.forEach((w, i) => { ws.getColumn(colStart + i).width = w; });
+        ws.getColumn(colStart + blockWidth).width = 3;
+      }
+    }
+
+    // シート2: 業態別分析（複数年は横に並べる）
     const ws2 = wb.addWorksheet("業態別分析");
-    let r2 = 1;
+    let r2End = 1;
     if (sampleYears.length <= 1) {
       const bizStatsAll = computeBizStats(df, providedCompanies);
-      r2 = writeBizTable(ws2, r2, bizStatsAll);
+      r2End = writeBizTable(ws2, 1, 1, bizStatsAll);
+      setRepeatedWidths(ws2, 1, BIZ_TABLE_WIDTH, [16, 10, 10, 10, 12, 12, 14], 1);
     } else {
+      let col = 1;
       for (const y of sampleYears) {
         const companiesInYear = Array.from(new Set(df.filter(r => r.__year === y).map(r => r.__company))).sort();
         const dfYear = df.filter(r => r.__year === y);
         const bizStatsYear = computeBizStats(dfYear, companiesInYear);
-        r2 = writeBizTable(ws2, r2, bizStatsYear, `${y}年`);
-        r2 += 2;
+        const endRow = writeBizTable(ws2, 1, col, bizStatsYear, `${y}年`);
+        r2End = Math.max(r2End, endRow);
+        col += BIZ_TABLE_WIDTH + GAP;
       }
+      setRepeatedWidths(ws2, 1, BIZ_TABLE_WIDTH, [16, 10, 10, 10, 12, 12, 14], sampleYears.length);
     }
-    ["A", "B", "C", "D", "E", "F", "G"].forEach((col, i) => {
-      ws2.getColumn(col).width = [16, 10, 10, 10, 12, 12, 14][i];
-    });
-    setCell(ws2, r2 + 1, 1, "※OK/NG/検討中件数は評価コメント内の文字列を数えた概算値です（1コメントに複数商品分の評価が含まれる場合があります）", { font: { size: 9, italic: true }, border: false, alignment: { wrapText: false } });
+    setCell(ws2, r2End + 1, 1, "※OK/NG/検討中件数は評価コメント内の文字列を数えた概算値です（1コメントに複数商品分の評価が含まれる場合があります）", { font: { size: 9, italic: true }, border: false, alignment: { wrapText: false } });
 
-    // シート3: 受注データ分析
+    // シート3: 受注データ分析（複数年は3つの表それぞれを横に並べる）
     const ws3 = wb.addWorksheet("受注データ分析");
-    let r3 = 1;
-    if (orderYears.length <= 1) {
-      const { orderBizStats, productStats, companyStats } = computeOrderStats(normalRows);
-      r3 = writeOrderTables(ws3, r3, orderBizStats, productStats, companyStats);
-    } else {
-      for (const y of orderYears) {
-        const normalRowsYear = normalRows.filter(r => r.__year === y);
-        const { orderBizStats, productStats, companyStats } = computeOrderStats(normalRowsYear);
-        r3 = writeOrderTables(ws3, r3, orderBizStats, productStats, companyStats, `${y}年`);
-        r3 += 2;
-      }
+    const yearsForOrder = orderYears.length > 1 ? orderYears : [null];
+
+    function orderStatsRows(orderBizStats, productStats, companyStats) {
+      const bizRows = Object.entries(orderBizStats).sort((a, b) => b[1].件数 - a[1].件数)
+        .map(([biz, s]) => [biz, s.companies.size, s.件数, s.数量]);
+      const productRows = Object.entries(productStats).sort((a, b) => b[1].数量 - a[1].数量).slice(0, 10)
+        .map(([product, s]) => [product, s.数量, s.companies.size]);
+      const companyRows = Object.entries(companyStats).sort((a, b) => b[1].数量 - a[1].数量).slice(0, 10)
+        .map(([company, s]) => [company, s.業態, s.数量, s.件数]);
+      return { bizRows, productRows, companyRows };
     }
-    ["A", "B", "C", "D"].forEach((col, i) => {
-      ws3.getColumn(col).width = [45, 14, 14, 12][i];
-    });
-    setCell(ws3, r3 + 1, 1, "※このシートはサンプル注文を除いた「通常注文」のみを集計しています（金額は含めていません）", { font: { size: 9, italic: true }, border: false, alignment: { wrapText: false } });
+
+    let rowCursor = 1;
+    // 表1: 業態別受注動向（年ごとに横並び）
+    {
+      let col = 1;
+      let sectionEnd = rowCursor;
+      for (const y of yearsForOrder) {
+        const normalRowsY = y === null ? normalRows : normalRows.filter(r => r.__year === y);
+        const { orderBizStats, productStats, companyStats } = computeOrderStats(normalRowsY);
+        const { bizRows } = orderStatsRows(orderBizStats, productStats, companyStats);
+        const title = y === null ? "業態別 受注動向（通常注文ベース）" : `${y}年 業態別受注動向`;
+        const endRow = writeOneTable(ws3, rowCursor, col, title, ["業態", "受注社数", "受注件数", "受注数量合計"], bizRows);
+        sectionEnd = Math.max(sectionEnd, endRow);
+        col += ORDER_BIZ_WIDTH + GAP;
+      }
+      setRepeatedWidths(ws3, 1, ORDER_BIZ_WIDTH, [22, 12, 12, 14], yearsForOrder.length);
+      rowCursor = sectionEnd + 2;
+    }
+
+    // 表2: 商品別ランキング（年ごとに横並び）
+    {
+      let col = 1;
+      let sectionEnd = rowCursor;
+      for (const y of yearsForOrder) {
+        const normalRowsY = y === null ? normalRows : normalRows.filter(r => r.__year === y);
+        const { orderBizStats, productStats, companyStats } = computeOrderStats(normalRowsY);
+        const { productRows } = orderStatsRows(orderBizStats, productStats, companyStats);
+        const title = y === null ? "商品別ランキング（通常注文・数量順、上位10件）" : `${y}年 商品別ランキング（上位10件）`;
+        const endRow = writeOneTable(ws3, rowCursor, col, title, ["商品名", "受注数量合計", "購入社数"], productRows, [], [0]);
+        sectionEnd = Math.max(sectionEnd, endRow);
+        col += PRODUCT_WIDTH + GAP;
+      }
+      setRepeatedWidths(ws3, 1, PRODUCT_WIDTH, [40, 14, 12], yearsForOrder.length);
+      rowCursor = sectionEnd + 2;
+    }
+
+    // 表3: 会社別ランキング（年ごとに横並び）
+    {
+      let col = 1;
+      let sectionEnd = rowCursor;
+      for (const y of yearsForOrder) {
+        const normalRowsY = y === null ? normalRows : normalRows.filter(r => r.__year === y);
+        const { orderBizStats, productStats, companyStats } = computeOrderStats(normalRowsY);
+        const { companyRows } = orderStatsRows(orderBizStats, productStats, companyStats);
+        const title = y === null ? "会社別ランキング（通常注文・数量順、上位10社）" : `${y}年 会社別ランキング（上位10社）`;
+        const endRow = writeOneTable(ws3, rowCursor, col, title, ["会社名", "業態", "受注数量合計", "受注件数"], companyRows, [], [0]);
+        sectionEnd = Math.max(sectionEnd, endRow);
+        col += COMPANY_WIDTH + GAP;
+      }
+      setRepeatedWidths(ws3, 1, COMPANY_WIDTH, [26, 16, 14, 12], yearsForOrder.length);
+      rowCursor = sectionEnd;
+    }
+
+    setCell(ws3, rowCursor + 1, 1, "※このシートはサンプル注文を除いた「通常注文」のみを集計しています（金額は含めていません）", { font: { size: 9, italic: true }, border: false, alignment: { wrapText: false } });
 
     const buffer = await wb.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
