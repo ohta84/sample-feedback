@@ -22,6 +22,7 @@ from datetime import datetime
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 MAKER_CODES_CSV = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "maker_codes.csv")
 
@@ -421,114 +422,155 @@ def main():
         ws.column_dimensions[col_letter].width = width
 
     # ---------------- シート2・3で使う共通ヘルパー ----------------
-    def write_header_row(ws, row_idx, headers):
-        for i, h in enumerate(headers, start=1):
-            c = ws.cell(row=row_idx, column=i, value=h)
+    def write_header_row(ws, row_idx, col_offset, headers):
+        for i, h in enumerate(headers):
+            c = ws.cell(row=row_idx, column=col_offset + i, value=h)
             c.font = Font(name=FONT_NAME, size=11, bold=True)
             c.fill = GREY_FILL
             c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             c.border = BORDER_ALL
 
-    def write_data_row(ws, row_idx, values, pct_cols=(), wrap_cols=()):
-        for i, v in enumerate(values, start=1):
-            cell = ws.cell(row=row_idx, column=i, value=v)
+    def write_data_row(ws, row_idx, col_offset, values, pct_cols=(), wrap_cols=()):
+        for i, v in enumerate(values):
+            cell = ws.cell(row=row_idx, column=col_offset + i, value=v)
             cell.font = Font(name=FONT_NAME, size=11)
             cell.border = BORDER_ALL
             cell.alignment = Alignment(vertical="center", wrap_text=(i in wrap_cols))
             if i in pct_cols:
                 cell.number_format = "0.0%"
 
-    def write_biz_table(ws, start_row, biz_stats, title=None):
+    def write_biz_table(ws, start_row, col_offset, biz_stats, title=None):
+        """業態別分析の1ブロックを (start_row, col_offset) を左上として書き込む。戻り値: 終端行"""
         r = start_row
         if title:
-            ws.cell(row=r, column=1, value=title).font = Font(name=FONT_NAME, size=13, bold=True)
+            ws.cell(row=r, column=col_offset, value=title).font = Font(name=FONT_NAME, size=13, bold=True)
             r += 1
         headers2 = ["業態", "提供社数", "転換社数", "転換率", "OK件数(概算)", "NG件数(概算)", "検討中件数(概算)"]
-        write_header_row(ws, r, headers2)
+        write_header_row(ws, r, col_offset, headers2)
         r += 1
         sorted_biz = sorted(biz_stats.items(), key=lambda kv: kv[1]["提供"], reverse=True)
         for biz, s in sorted_biz:
             biz_rate = (s["転換"] / s["提供"]) if s["提供"] else 0
             values = [biz, s["提供"], s["転換"], biz_rate, s["OK件数"], s["NG件数"], s["検討中件数"]]
-            write_data_row(ws, r, values, pct_cols=(4,))
+            write_data_row(ws, r, col_offset, values, pct_cols=(3,))
             r += 1
         return r
 
-    def write_order_tables(ws, start_row, order_biz_stats, product_stats, company_stats, title=None):
+    def write_one_table(ws, start_row, col_offset, title, headers, rows, pct_cols=(), wrap_cols=()):
+        """タイトル1行＋ヘッダー＋データ行、を (start_row, col_offset) を左上として書き込む"""
         r = start_row
         if title:
-            ws.cell(row=r, column=1, value=title).font = Font(name=FONT_NAME, size=14, bold=True)
+            ws.cell(row=r, column=col_offset, value=title).font = Font(name=FONT_NAME, size=13, bold=True)
             r += 1
-
-        ws.cell(row=r, column=1, value="業態別 受注動向（通常注文ベース）").font = Font(name=FONT_NAME, size=13, bold=True)
+        write_header_row(ws, r, col_offset, headers)
         r += 1
-        write_header_row(ws, r, ["業態", "受注社数", "受注件数", "受注数量合計"])
-        r += 1
-        sorted_order_biz = sorted(order_biz_stats.items(), key=lambda kv: kv[1]["件数"], reverse=True)
-        for biz, s in sorted_order_biz:
-            write_data_row(ws, r, [biz, len(s["companies"]), s["件数"], s["数量"]])
+        for values in rows:
+            write_data_row(ws, r, col_offset, values, pct_cols=pct_cols, wrap_cols=wrap_cols)
             r += 1
-
-        r += 2
-        ws.cell(row=r, column=1, value="商品別ランキング（通常注文・数量順、上位10件）").font = Font(name=FONT_NAME, size=13, bold=True)
-        r += 1
-        write_header_row(ws, r, ["商品名", "受注数量合計", "購入社数"])
-        r += 1
-        sorted_products = sorted(product_stats.items(), key=lambda kv: kv[1]["数量"], reverse=True)[:10]
-        for product, s in sorted_products:
-            write_data_row(ws, r, [product, s["数量"], len(s["companies"])], wrap_cols=(1,))
-            r += 1
-
-        r += 2
-        ws.cell(row=r, column=1, value="会社別ランキング（通常注文・数量順、上位10社）").font = Font(name=FONT_NAME, size=13, bold=True)
-        r += 1
-        write_header_row(ws, r, ["会社名", "業態", "受注数量合計", "受注件数"])
-        r += 1
-        sorted_companies = sorted(company_stats.items(), key=lambda kv: kv[1]["数量"], reverse=True)[:10]
-        for company, s in sorted_companies:
-            write_data_row(ws, r, [company, s["業態"], s["数量"], s["件数"]], wrap_cols=(1,))
-            r += 1
-
         return r
 
-    # ---------------- シート2: 業態別分析 ----------------
+    BIZ_TABLE_WIDTH = 7      # 業態, 提供社数, 転換社数, 転換率, OK, NG, 検討中
+    ORDER_BIZ_WIDTH = 4      # 業態, 受注社数, 受注件数, 受注数量合計
+    PRODUCT_WIDTH = 3        # 商品名, 受注数量合計, 購入社数
+    COMPANY_WIDTH = 4        # 会社名, 業態, 受注数量合計, 受注件数
+    GAP = 1                  # ブロック間の空白列数
+
+    def set_repeated_widths(ws, base_col, block_width, widths, n_blocks):
+        """横に並んだ複数ブロック分の列幅をまとめて設定する"""
+        for b in range(n_blocks):
+            col_start = base_col + b * (block_width + GAP)
+            for i, w in enumerate(widths):
+                ws.column_dimensions[get_column_letter(col_start + i)].width = w
+            # ブロック間のスペーサー列
+            ws.column_dimensions[get_column_letter(col_start + block_width)].width = 3
+
+    # ---------------- シート2: 業態別分析（複数年は横に並べる） ----------------
     ws2 = wb.create_sheet("業態別分析")
-    r2 = 1
     if len(sample_years) <= 1:
         biz_stats_all = compute_biz_stats(df, provided_companies)
-        r2 = write_biz_table(ws2, r2, biz_stats_all)
+        r2_end = write_biz_table(ws2, 1, 1, biz_stats_all)
+        set_repeated_widths(ws2, 1, BIZ_TABLE_WIDTH, [16, 10, 10, 10, 12, 12, 14], 1)
     else:
+        col = 1
+        r2_end = 1
         for y in sample_years:
             companies_in_year = sorted(set(df.loc[df["_year"] == y, "_company"]))
             df_year = df[df["_year"] == y]
             biz_stats_year = compute_biz_stats(df_year, companies_in_year)
-            r2 = write_biz_table(ws2, r2, biz_stats_year, title=f"{y}年")
-            r2 += 2
+            end_row = write_biz_table(ws2, 1, col, biz_stats_year, title=f"{y}年")
+            r2_end = max(r2_end, end_row)
+            col += BIZ_TABLE_WIDTH + GAP
+        set_repeated_widths(ws2, 1, BIZ_TABLE_WIDTH, [16, 10, 10, 10, 12, 12, 14], len(sample_years))
 
-    for col_letter, width in {"A": 16, "B": 10, "C": 10, "D": 10, "E": 12, "F": 12, "G": 14}.items():
-        ws2.column_dimensions[col_letter].width = width
-
-    note = ws2.cell(row=r2 + 1, column=1,
+    note = ws2.cell(row=r2_end + 1, column=1,
                      value="※OK/NG/検討中件数は評価コメント内の文字列を数えた概算値です（1コメントに複数商品分の評価が含まれる場合があります）")
     note.font = Font(name=FONT_NAME, size=9, italic=True)
 
-    # ---------------- シート3: 受注データ分析 ----------------
+    # ---------------- シート3: 受注データ分析（複数年は3つの表それぞれを横に並べる） ----------------
     ws3 = wb.create_sheet("受注データ分析")
-    r3 = 1
-    if len(order_years) <= 1:
-        order_biz_stats, product_stats, company_stats = compute_order_stats(df_normal)
-        r3 = write_order_tables(ws3, r3, order_biz_stats, product_stats, company_stats)
-    else:
-        for y in order_years:
-            df_normal_year = df_normal[df_normal["_year"] == y]
-            order_biz_stats, product_stats, company_stats = compute_order_stats(df_normal_year)
-            r3 = write_order_tables(ws3, r3, order_biz_stats, product_stats, company_stats, title=f"{y}年")
-            r3 += 2
 
-    for col_letter, width in {"A": 45, "B": 14, "C": 14, "D": 12}.items():
-        ws3.column_dimensions[col_letter].width = width
+    years_for_order = order_years if len(order_years) > 1 else [None]
 
-    note3 = ws3.cell(row=r3 + 1, column=1,
+    def order_stats_rows(order_biz_stats, product_stats, company_stats):
+        biz_rows = [
+            [biz, len(s["companies"]), s["件数"], s["数量"]]
+            for biz, s in sorted(order_biz_stats.items(), key=lambda kv: kv[1]["件数"], reverse=True)
+        ]
+        product_rows = [
+            [product, s["数量"], len(s["companies"])]
+            for product, s in sorted(product_stats.items(), key=lambda kv: kv[1]["数量"], reverse=True)[:10]
+        ]
+        company_rows = [
+            [company, s["業態"], s["数量"], s["件数"]]
+            for company, s in sorted(company_stats.items(), key=lambda kv: kv[1]["数量"], reverse=True)[:10]
+        ]
+        return biz_rows, product_rows, company_rows
+
+    row_cursor = 1
+    # --- 表1: 業態別受注動向（年ごとに横並び） ---
+    col = 1
+    section_end = row_cursor
+    for y in years_for_order:
+        df_normal_y = df_normal if y is None else df_normal[df_normal["_year"] == y]
+        order_biz_stats, product_stats, company_stats = compute_order_stats(df_normal_y)
+        biz_rows, _, _ = order_stats_rows(order_biz_stats, product_stats, company_stats)
+        title = "業態別 受注動向（通常注文ベース）" if y is None else f"{y}年 業態別受注動向"
+        end_row = write_one_table(ws3, row_cursor, col, title, ["業態", "受注社数", "受注件数", "受注数量合計"], biz_rows)
+        section_end = max(section_end, end_row)
+        col += ORDER_BIZ_WIDTH + GAP
+    set_repeated_widths(ws3, 1, ORDER_BIZ_WIDTH, [22, 12, 12, 14], len(years_for_order))
+    row_cursor = section_end + 2
+
+    # --- 表2: 商品別ランキング（年ごとに横並び） ---
+    col = 1
+    section_start = row_cursor
+    section_end = row_cursor
+    for y in years_for_order:
+        df_normal_y = df_normal if y is None else df_normal[df_normal["_year"] == y]
+        order_biz_stats, product_stats, company_stats = compute_order_stats(df_normal_y)
+        _, product_rows, _ = order_stats_rows(order_biz_stats, product_stats, company_stats)
+        title = "商品別ランキング（通常注文・数量順、上位10件）" if y is None else f"{y}年 商品別ランキング（上位10件）"
+        end_row = write_one_table(ws3, row_cursor, col, title, ["商品名", "受注数量合計", "購入社数"], product_rows, wrap_cols=(0,))
+        section_end = max(section_end, end_row)
+        col += PRODUCT_WIDTH + GAP
+    set_repeated_widths(ws3, 1, PRODUCT_WIDTH, [40, 14, 12], len(years_for_order))
+    row_cursor = section_end + 2
+
+    # --- 表3: 会社別ランキング（年ごとに横並び） ---
+    col = 1
+    section_end = row_cursor
+    for y in years_for_order:
+        df_normal_y = df_normal if y is None else df_normal[df_normal["_year"] == y]
+        order_biz_stats, product_stats, company_stats = compute_order_stats(df_normal_y)
+        _, _, company_rows = order_stats_rows(order_biz_stats, product_stats, company_stats)
+        title = "会社別ランキング（通常注文・数量順、上位10社）" if y is None else f"{y}年 会社別ランキング（上位10社）"
+        end_row = write_one_table(ws3, row_cursor, col, title, ["会社名", "業態", "受注数量合計", "受注件数"], company_rows, wrap_cols=(0,))
+        section_end = max(section_end, end_row)
+        col += COMPANY_WIDTH + GAP
+    set_repeated_widths(ws3, 1, COMPANY_WIDTH, [26, 16, 14, 12], len(years_for_order))
+    row_cursor = section_end
+
+    note3 = ws3.cell(row=row_cursor + 1, column=1,
                       value="※このシートはサンプル注文を除いた「通常注文」のみを集計しています（金額は含めていません）")
     note3.font = Font(name=FONT_NAME, size=9, italic=True)
 
