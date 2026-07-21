@@ -119,6 +119,11 @@ def clean_company_name(name):
     return s.strip()
 
 
+def strip_maker_code(product_name):
+    """商品名冒頭の [141] のようなメーカーコード表記を除去する（提出先はメーカー自身なので不要）"""
+    return re.sub(r"^\s*\[\d+\]\s*", "", str(product_name)).strip()
+
+
 def detect_maker_code(series_of_product_names):
     codes = [extract_maker_code(p) for p in series_of_product_names]
     codes = [c for c in codes if c]
@@ -517,7 +522,7 @@ def main():
             for biz, s in sorted(order_biz_stats.items(), key=lambda kv: kv[1]["件数"], reverse=True)
         ]
         product_rows = [
-            [product, s["数量"], len(s["companies"])]
+            [strip_maker_code(product), s["数量"], len(s["companies"])]
             for product, s in sorted(product_stats.items(), key=lambda kv: kv[1]["数量"], reverse=True)[:10]
         ]
         company_rows = [
@@ -550,10 +555,10 @@ def main():
         order_biz_stats, product_stats, company_stats = compute_order_stats(df_normal_y)
         _, product_rows, _ = order_stats_rows(order_biz_stats, product_stats, company_stats)
         title = "商品別ランキング（通常注文・数量順、上位10件）" if y is None else f"{y}年 商品別ランキング（上位10件）"
-        end_row = write_one_table(ws3, row_cursor, col, title, ["商品名", "受注数量合計", "購入社数"], product_rows, wrap_cols=(0,))
+        end_row = write_one_table(ws3, row_cursor, col, title, ["商品名", "受注数量合計", "購入社数"], product_rows)
         section_end = max(section_end, end_row)
         col += PRODUCT_WIDTH + GAP
-    set_repeated_widths(ws3, 1, PRODUCT_WIDTH, [40, 14, 12], len(years_for_order))
+    set_repeated_widths(ws3, 1, PRODUCT_WIDTH, [46, 14, 12], len(years_for_order))
     row_cursor = section_end + 2
 
     # --- 表3: 会社別ランキング（年ごとに横並び） ---
@@ -564,7 +569,7 @@ def main():
         order_biz_stats, product_stats, company_stats = compute_order_stats(df_normal_y)
         _, _, company_rows = order_stats_rows(order_biz_stats, product_stats, company_stats)
         title = "会社別ランキング（通常注文・数量順、上位10社）" if y is None else f"{y}年 会社別ランキング（上位10社）"
-        end_row = write_one_table(ws3, row_cursor, col, title, ["会社名", "業態", "受注数量合計", "受注件数"], company_rows, wrap_cols=(0,))
+        end_row = write_one_table(ws3, row_cursor, col, title, ["会社名", "業態", "受注数量合計", "受注件数"], company_rows)
         section_end = max(section_end, end_row)
         col += COMPANY_WIDTH + GAP
     set_repeated_widths(ws3, 1, COMPANY_WIDTH, [26, 16, 14, 12], len(years_for_order))
