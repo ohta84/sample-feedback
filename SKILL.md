@@ -174,3 +174,10 @@ CSVが1メーカー分に絞られていれば、これだけでメーカーコ�
 - 新しいメーカーコードが出てきたら `data/maker_codes.csv` に追記して更新する
 - ユーザーから「評価データCSVだけ」「評価回収CSVだけ」等を渡された場合は、受注CSV（全項目版）が
   必要であることを伝え、代わりを求める（評価データCSVだけでは転換率もシート3も出せない）
+
+
+## メーカーコード表の参照先（更新）
+
+- Webツール: `index.html` の `MAKER_CODES_SHEET_CSV_URL`（スプシ公開CSV）を優先し、空または読めない時は `data/maker_codes.csv`
+- Python版: `data/maker_codes.csv`
+- 新メーカー追加時はスプシの「メーカーコード表」に1行追加し、必要なら `data/maker_codes.csv` にも反映する

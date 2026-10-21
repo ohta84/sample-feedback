@@ -267,24 +267,39 @@ function parseCsvText(text) {
   return { rows: result.data, headers: result.meta.fields || [] };
 }
 
-async function loadMakerCodeMap() {
+// 引き継ぎ用スプレッドシート「メーカーコード表」タブを「ウェブに公開」(CSV形式)したURLをここに入れる。
+// 空のままなら data/maker_codes.csv を使う。URLが読めない時も data/maker_codes.csv に切り替わる。
+const MAKER_CODES_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR4LB3md87fj5JqEoBuTiF-HT1mXRcUgzLsiFfprhQ9l_dZ5esOuJ3XTt20bhtsFgntCmUhWJ0hqPR7/pub?gid=2&single=true&output=csv";
+
+function buildCodeMap(text) {
+  const { rows } = parseCsvText(text);
+  const map = {};
+  for (const r of rows) {
+    const keys = Object.keys(r);
+    if (keys.length < 2) continue;
+    const code = String(r[keys[0]]).trim();
+    const name = String(r[keys[1]]).trim();
+    if (code) map[code] = name;
+  }
+  return map;
+}
+
+async function fetchCodeMap(url) {
   try {
-    const res = await fetch("data/maker_codes.csv");
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return {};
-    const text = await res.text();
-    const { rows } = parseCsvText(text);
-    const map = {};
-    for (const r of rows) {
-      const keys = Object.keys(r);
-      if (keys.length < 2) continue;
-      const code = String(r[keys[0]]).trim();
-      const name = String(r[keys[1]]).trim();
-      if (code) map[code] = name;
-    }
-    return map;
+    return buildCodeMap(await res.text());
   } catch (e) {
     return {};
   }
+}
+
+async function loadMakerCodeMap() {
+  if (MAKER_CODES_SHEET_CSV_URL) {
+    const fromSheet = await fetchCodeMap(MAKER_CODES_SHEET_CSV_URL);
+    if (Object.keys(fromSheet).length > 0) return fromSheet;
+  }
+  return await fetchCodeMap("data/maker_codes.csv");
 }
 
 function setCell(ws, rowIdx, colIdx, value, opts) {
@@ -365,7 +380,7 @@ async function generate() {
       if (!resolvedMakerCode) throw new Error("メーカーコードをCSVから自動検出できませんでした。メーカー名かメーカーコードを入力してください。");
       const codeMap = await loadMakerCodeMap();
       const resolved = codeMap[resolvedMakerCode];
-      if (!resolved) throw new Error(`メーカーコード ${resolvedMakerCode} が data/maker_codes.csv に見つかりません。メーカー名を直接入力してください。`);
+      if (!resolved) throw new Error(`メーカーコード ${resolvedMakerCode} がメーカーコード表に見つかりません。引き継ぎスプシの「メーカーコード表」シートに行を追加してください。`);
       makerName = `${resolvedMakerCode}${cleanCompanyName(resolved)}`;
     }
 
