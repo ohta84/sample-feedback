@@ -249,18 +249,30 @@ def main():
         sys.stderr.write("サンプル注文（セット名に「サンプル」を含む行）が見つかりませんでした。\n")
         sys.exit(1)
 
-    # 通常注文をした会社（同じCSV内で、セット名にサンプルを含まない行がある会社）
+    # 通常注文をした会社（会社単位の転換判定用。同じCSV内に通常注文が1件でもある会社）
     companies_with_order = set(
         df_order.loc[~df_order["_is_sample"], o_company].astype(str)
     )
+    # 通常注文された「会社×商品名」の組（商品名は完全一致で突き合わせる）
+    normal_pairs = set(zip(
+        df_order.loc[~df_order["_is_sample"], o_company].astype(str),
+        df_order.loc[~df_order["_is_sample"], o_product].astype(str).str.strip(),
+    ))
 
     df["_company"] = df[o_company].astype(str)
     df["_date_parsed"] = df[o_date].apply(parse_date)
 
+    df["_product"] = df[o_product].astype(str).str.strip()
+    df["_pair"] = list(zip(df["_company"], df["_product"]))
+    df["_converted"] = df["_pair"].isin(normal_pairs)
     provided_companies = sorted(set(df["_company"]))
-    n_provided = len(provided_companies)
-    n_converted = sum(1 for c in provided_companies if c in companies_with_order)
+    n_companies = len(provided_companies)
+    sample_pairs = set(df["_pair"])
+    n_provided = len(sample_pairs)  # サンプル提供数（会社×商品）
+    n_converted = sum(1 for pr in sample_pairs if pr in normal_pairs)
     rate = (n_converted / n_provided) if n_provided else 0
+    n_converted_co = sum(1 for c in provided_companies if c in companies_with_order)
+    rate_co = (n_converted_co / n_companies) if n_companies else 0
 
     all_dates = [d for d in df["_date_parsed"] if d is not None]
     period_str = f"{min(all_dates):%Y/%m/%d}〜{max(all_dates):%Y/%m/%d}" if all_dates else ""
@@ -280,14 +292,19 @@ def main():
         if c not in company_type and pd.notna(t) and str(t).strip():
             company_type[c] = str(t).strip()
 
-    def compute_biz_stats(df_subset, provided_companies_subset):
+    def compute_biz_stats(df_subset, provided_companies_subset=None):
         stats = {}
-        for c in provided_companies_subset:
+        for c, prod in sorted(set(df_subset["_pair"])):
             t = company_type.get(c, "(不明)")
-            s = stats.setdefault(t, {"提供": 0, "転換": 0, "OK件数": 0, "NG件数": 0, "検討中件数": 0})
+            s = stats.setdefault(t, {"提供": 0, "転換": 0, "社提供": 0, "社転換": 0, "OK件数": 0, "NG件数": 0, "検討中件数": 0})
             s["提供"] += 1
-            if c in companies_with_order:
+            if (c, prod) in normal_pairs:
                 s["転換"] += 1
+        for c in sorted(set(df_subset["_company"])):
+            t = company_type.get(c, "(不明)")
+            stats[t]["社提供"] += 1
+            if c in companies_with_order:
+                stats[t]["社転換"] += 1
         for group_orderno, g in df_subset.groupby(o_orderno):
             first = g.iloc[0]
             c = first["_company"]
@@ -348,9 +365,17 @@ def main():
         return cell
 
     set_row(1, f"{args.maker_name}様サンプルフィードバック", bold=True, size=18)
-    set_row(2, f"サンプル提供社数：{n_provided}社")
-    set_row(3, f"注文転換社数：{n_converted}社")
+    set_row(2, f"サンプル提供数：{n_provided}件（商品単位）")
+    set_row(3, f"注文転換数：{n_converted}件（サンプルと同じ商品が注文された数）")
     cell4 = set_row(4, f"注文転換率：{rate*100:.1f}%", bold=True, color="FF0000")
+    # 会社単位（そのメーカーの商品を1件でも注文した会社）はE列に並べる
+    def set_row_e(row_idx, text, bold=False, color=None):
+        c = ws.cell(row=row_idx, column=5, value=text)
+        c.font = Font(name=FONT_NAME, size=11, bold=bold, color=color)
+        c.alignment = Alignment(vertical="center", wrap_text=False)
+    set_row_e(2, f"サンプル提供社数：{n_companies}社（会社単位）")
+    set_row_e(3, f"注文転換社数：{n_converted_co}社（そのメーカーの商品を1件でも注文）")
+    set_row_e(4, f"注文転換率（会社単位）：{rate_co*100:.1f}%", bold=True, color="FF0000")
 
     set_row(6, period_str)
     today = datetime.now()
@@ -377,9 +402,6 @@ def main():
         d_parsed = parse_date(date_val)
         date_display = f"{d_parsed:%Y/%m/%d}" if d_parsed else date_val
 
-        has_order = company in companies_with_order
-        order_text = "✅ 注文あり" if has_order else "－ なし"
-
         first = g.iloc[0]
         result_text = str(first[o_result]).strip() if o_result else ""
         adopt_text = str(first[o_adopt]).strip() if o_adopt else ""
@@ -395,18 +417,13 @@ def main():
             "D": first.get(o_pref, ""),
             "F": str(first[o_usage]).strip() if o_usage else "",
             "G": g_value,
-            "H": order_text,
         }
 
         for col_letter, value in merged_values.items():
             col_idx = "ABCDEFGH".index(col_letter) + 1
             cell = ws.cell(row=start_row, column=col_idx, value=value)
             cell.font = Font(name=FONT_NAME, size=11,
-                              bold=(col_letter == "H" and has_order),
-                              color=("375623" if (col_letter == "H" and has_order)
-                                     else ("999999" if col_letter == "H" else None)))
-            if col_letter == "H" and has_order:
-                cell.fill = GREEN_FILL
+                              bold=False)
             cell.alignment = Alignment(vertical="center", wrap_text=True)
             if end_row > start_row:
                 ws.merge_cells(start_row=start_row, start_column=col_idx,
@@ -420,6 +437,16 @@ def main():
             cell.font = Font(name=FONT_NAME, size=11)
             cell.alignment = Alignment(vertical="center", wrap_text=True)
             cell.border = BORDER_ALL
+
+            # 注文有無は商品ごと（サンプルと同じ商品が同じ会社から注文されたか）
+            has_order = (company, str(product).strip()) in normal_pairs
+            hcell = ws.cell(row=r, column=8, value="✅ 注文あり" if has_order else "－ なし")
+            hcell.font = Font(name=FONT_NAME, size=11, bold=has_order,
+                              color=("375623" if has_order else "999999"))
+            if has_order:
+                hcell.fill = GREEN_FILL
+            hcell.alignment = Alignment(vertical="center", wrap_text=True)
+            hcell.border = BORDER_ALL
 
         row_ptr = end_row + 1
 
@@ -450,14 +477,15 @@ def main():
         if title:
             ws.cell(row=r, column=col_offset, value=title).font = Font(name=FONT_NAME, size=13, bold=True)
             r += 1
-        headers2 = ["業態", "提供社数", "転換社数", "転換率", "OK件数(概算)", "NG件数(概算)", "検討中件数(概算)"]
+        headers2 = ["業態", "提供数", "転換数", "転換率", "提供社数", "転換社数", "転換率(社)", "OK件数(概算)", "NG件数(概算)", "検討中件数(概算)"]
         write_header_row(ws, r, col_offset, headers2)
         r += 1
         sorted_biz = sorted(biz_stats.items(), key=lambda kv: kv[1]["提供"], reverse=True)
         for biz, s in sorted_biz:
             biz_rate = (s["転換"] / s["提供"]) if s["提供"] else 0
-            values = [biz, s["提供"], s["転換"], biz_rate, s["OK件数"], s["NG件数"], s["検討中件数"]]
-            write_data_row(ws, r, col_offset, values, pct_cols=(3,))
+            biz_rate_co = (s["社転換"] / s["社提供"]) if s["社提供"] else 0
+            values = [biz, s["提供"], s["転換"], biz_rate, s["社提供"], s["社転換"], biz_rate_co, s["OK件数"], s["NG件数"], s["検討中件数"]]
+            write_data_row(ws, r, col_offset, values, pct_cols=(3, 6))
             r += 1
         return r
 
@@ -474,7 +502,7 @@ def main():
             r += 1
         return r
 
-    BIZ_TABLE_WIDTH = 7      # 業態, 提供社数, 転換社数, 転換率, OK, NG, 検討中
+    BIZ_TABLE_WIDTH = 10     # 業態, 提供数, 転換数, 転換率, 提供社数, 転換社数, 転換率(社), OK, NG, 検討中
     ORDER_BIZ_WIDTH = 4      # 業態, 受注社数, 受注件数, 受注数量合計
     PRODUCT_WIDTH = 3        # 商品名, 受注数量合計, 購入社数
     COMPANY_WIDTH = 4        # 会社名, 業態, 受注数量合計, 受注件数
@@ -496,20 +524,19 @@ def main():
     # ---------------- シート2: 業態別分析（複数年は横に並べる） ----------------
     ws2 = wb.create_sheet("業態別分析")
     if len(sample_years) <= 1:
-        biz_stats_all = compute_biz_stats(df, provided_companies)
+        biz_stats_all = compute_biz_stats(df)
         r2_end = write_biz_table(ws2, 1, 1, biz_stats_all)
-        set_repeated_widths(ws2, 1, BIZ_TABLE_WIDTH + GAP, [16, 10, 10, 10, 12, 12, 14], 1)
+        set_repeated_widths(ws2, 1, BIZ_TABLE_WIDTH + GAP, [16, 10, 10, 10, 10, 10, 11, 12, 12, 14], 1)
     else:
         col = 1
         r2_end = 1
         for y in sample_years:
-            companies_in_year = sorted(set(df.loc[df["_year"] == y, "_company"]))
             df_year = df[df["_year"] == y]
-            biz_stats_year = compute_biz_stats(df_year, companies_in_year)
+            biz_stats_year = compute_biz_stats(df_year)
             end_row = write_biz_table(ws2, 1, col, biz_stats_year, title=f"{y}年")
             r2_end = max(r2_end, end_row)
             col += BIZ_TABLE_WIDTH + GAP
-        set_repeated_widths(ws2, 1, BIZ_TABLE_WIDTH + GAP, [16, 10, 10, 10, 12, 12, 14], len(sample_years))
+        set_repeated_widths(ws2, 1, BIZ_TABLE_WIDTH + GAP, [16, 10, 10, 10, 10, 10, 11, 12, 12, 14], len(sample_years))
 
     note = ws2.cell(row=r2_end + 1, column=1,
                      value="※OK/NG/検討中件数は評価コメント内の文字列を数えた概算値です（1コメントに複数商品分の評価が含まれる場合があります）")
@@ -589,7 +616,7 @@ def main():
     note3.font = Font(name=FONT_NAME, size=9, italic=True)
 
     wb.save(args.output)
-    print(f"OK: {args.output} (提供社数={n_provided}, 転換社数={n_converted}, 転換率={rate*100:.1f}%)")
+    print(f"OK: {args.output} (提供数={n_provided}件, 転換数={n_converted}件, 転換率={rate*100:.1f}% / 会社単位 {n_converted_co}/{n_companies}社 {rate_co*100:.1f}%)")
 
 
 if __name__ == "__main__":
