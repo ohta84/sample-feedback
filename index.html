@@ -194,6 +194,31 @@ function parseDateJP(value) {
   return null;
 }
 
+// 社内の対応ログ行（例「8:30 2024/06/28　未回収メール済み　石崎」）の判定
+const LOG_LINE_RE = /^\s*\d{1,2}:\d{2}\s+\d{4}\/\d{1,2}\/\d{1,2}/;
+// 「評価がまだ回収できていない」ことを表す言い回し（短い文だけを「未回収」に置き換える）
+const UNCOLLECTED_HINTS = ["未回収", "回収できていない", "まだ試", "まだ食べ", "まだ召し上", "試せていない",
+  "食べていない", "試食していない", "未試食", "不出", "未提出", "未返信", "未返答"];
+const EVALUATION_WORDS = ["OK", "NG", "採用", "検討", "見送", "注文", "発注", "導入"];
+const UNCOLLECTED_MAX_LEN = 30;
+// メーカー向けの評価結果表示に整える。
+// - 社内の対応ログ行（時刻 日付 …担当者名）は除く（時間・担当者名はメーカーに不要）
+// - 評価の本文が無く、ログ行だけの場合は「未回収」と表示する
+// - 短い文で「まだ試せていない」など評価未回収の内容だけのものも「未回収」にする
+function cleanResultText(text) {
+  let t = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!t) return "";
+  const lines = t.split("\n");
+  if (lines.some(l => LOG_LINE_RE.test(l))) {
+    t = lines.filter(l => !LOG_LINE_RE.test(l)).join("\n").trim();
+    if (!t) return "未回収";
+  }
+  if (t.length <= UNCOLLECTED_MAX_LEN
+      && UNCOLLECTED_HINTS.some(h => t.includes(h))
+      && !EVALUATION_WORDS.some(w => t.includes(w))) return "未回収";
+  return t;
+}
+
 function formatDateJP(d) {
   if (!d) return "";
   const y = d.getFullYear();
@@ -415,24 +440,43 @@ async function generate() {
       throw new Error("サンプル注文（セット名に「サンプル」を含む行）が見つかりませんでした。");
     }
 
-    // 通常注文をした会社（会社単位の転換判定用。同じCSV内に通常注文が1件でもある会社）
-    const companiesWithOrder = new Set(
-      orderRows.filter(r => !r.__isSample).map(r => String(r[o_company] || ""))
-    );
-    // 通常注文された「会社×商品名」の組（商品名は完全一致で突き合わせる）
+    // 通常注文（サンプルでない注文）の「会社×商品名」ごとの納品日一覧（商品名は完全一致で突き合わせる）
     const pairKey = (c, p) => String(c) + "\u0001" + String(p).trim();
-    const normalPairs = new Set(
-      orderRows.filter(r => !r.__isSample).map(r => pairKey(r[o_company] || "", r[o_product] || ""))
-    );
+    const normalDates = new Map();
+    for (const r of orderRows) {
+      if (r.__isSample) continue;
+      const d = o_date ? parseDateJP(r[o_date]) : null;
+      if (!d) continue;
+      const k = pairKey(r[o_company] || "", r[o_product] || "");
+      if (!normalDates.has(k)) normalDates.set(k, []);
+      normalDates.get(k).push(d);
+    }
     df.forEach(r => { r.__pair = pairKey(r.__company, r[o_product] || ""); });
+
+    // 転換 = サンプル納品後に、同じ会社が同じ商品を通常注文している
+    // 判定は「通常注文の納品日 > そのサンプルの（最も早い）納品日」。サンプル納品日が不明なら注文の有無のみで判定
+    const firstSampleDate = new Map();
+    for (const r of df) {
+      const d = r.__dateParsed;
+      if (!d) continue;
+      if (!firstSampleDate.has(r.__pair) || d < firstSampleDate.get(r.__pair)) firstSampleDate.set(r.__pair, d);
+    }
+    const isConverted = (pr) => {
+      const dates = normalDates.get(pr);
+      if (!dates || dates.length === 0) return false;
+      const sd = firstSampleDate.get(pr);
+      return sd ? dates.some(d => d > sd) : true;
+    };
 
     const providedCompanies = Array.from(new Set(df.map(r => r.__company))).sort();
     const nCompanies = providedCompanies.length;
     const samplePairs = new Set(df.map(r => r.__pair));
     const nProvided = samplePairs.size; // サンプル提供数（会社×商品）
-    const nConverted = Array.from(samplePairs).filter(k => normalPairs.has(k)).length;
+    const convertedPairs = new Set(Array.from(samplePairs).filter(isConverted));
+    const companiesConverted = new Set(Array.from(convertedPairs).map(k => k.split("\u0001")[0]));
+    const nConverted = convertedPairs.size;
     const rate = nProvided ? nConverted / nProvided : 0;
-    const nConvertedCo = providedCompanies.filter(c => companiesWithOrder.has(c)).length;
+    const nConvertedCo = companiesConverted.size;
     const rateCo = nCompanies ? nConvertedCo / nCompanies : 0;
 
     const allDates = df.map(r => r.__dateParsed).filter(Boolean);
@@ -476,95 +520,32 @@ async function generate() {
       if (!companyType[r.__company] && o_type && r[o_type]) companyType[r.__company] = r[o_type];
     }
 
-    function computeBizStats(dfSubset) {
-      const stats = {};
-      const pairsHere = new Map();
-      for (const r of dfSubset) pairsHere.set(r.__pair, r.__company);
-      for (const [key, c] of pairsHere) {
-        const t = companyType[c] || "(不明)";
-        if (!stats[t]) stats[t] = { 提供: 0, 転換: 0, 社提供: 0, 社転換: 0, OK: 0, NG: 0, 検討中: 0 };
-        stats[t].提供 += 1;
-        if (normalPairs.has(key)) stats[t].転換 += 1;
-      }
-      for (const c of new Set(dfSubset.map(r => r.__company))) {
-        const t = companyType[c] || "(不明)";
-        stats[t].社提供 += 1;
-        if (companiesWithOrder.has(c)) stats[t].社転換 += 1;
-      }
-      const byOrderNo = new Map();
-      for (const r of dfSubset) {
-        const key = r[o_orderno];
-        if (!byOrderNo.has(key)) byOrderNo.set(key, []);
-        byOrderNo.get(key).push(r);
-      }
-      for (const rows of byOrderNo.values()) {
-        const first = rows[0];
-        const t = companyType[first.__company] || "(不明)";
-        const text = o_result ? String(first[o_result] || "") : "";
-        const adoptRaw = o_adopt ? String(first[o_adopt] || "") : "";
-        const [ok, ng, kento] = classifyEvaluation(text, adoptRaw, rows.length);
-        stats[t].OK += ok;
-        stats[t].NG += ng;
-        stats[t].検討中 += kento;
-      }
-      return stats;
-    }
-
-    // サンプル提供の年ごとに会社を分類
-    for (const r of df) { r.__year = r.__dateParsed ? r.__dateParsed.getFullYear() : null; }
-    const sampleYears = Array.from(new Set(df.map(r => r.__year).filter(y => y !== null))).sort();
-
-    // 受注データ分析（通常注文ベース、金額は含めない）
-    const normalRows = orderRows.filter(r => !r.__isSample);
-    for (const r of normalRows) {
-      r.__dateParsed = o_date ? parseDateJP(r[o_date]) : null;
-      r.__year = r.__dateParsed ? r.__dateParsed.getFullYear() : null;
-    }
-    const orderYears = Array.from(new Set(normalRows.map(r => r.__year).filter(y => y !== null))).sort();
-
-    function computeOrderStats(normalRowsSubset) {
-      const orderBizStats = {};
-      for (const r of normalRowsSubset) {
-        const t = (o_type && String(r[o_type] || "").trim()) || "(不明)";
-        if (!orderBizStats[t]) orderBizStats[t] = { companies: new Set(), 件数: 0, 数量: 0 };
-        orderBizStats[t].companies.add(String(r[o_company] || ""));
-        orderBizStats[t].件数 += 1;
-        orderBizStats[t].数量 += o_qty ? toNumber(r[o_qty]) : 0;
-      }
-      const productStats = {};
-      for (const r of normalRowsSubset) {
-        const p = String(r[o_product] || "").trim();
-        if (!productStats[p]) productStats[p] = { companies: new Set(), 数量: 0 };
-        productStats[p].companies.add(String(r[o_company] || ""));
-        productStats[p].数量 += o_qty ? toNumber(r[o_qty]) : 0;
-      }
-      const companyStats = {};
-      for (const r of normalRowsSubset) {
-        const c = String(r[o_company] || "").trim();
-        if (!companyStats[c]) companyStats[c] = { 業態: o_type ? String(r[o_type] || "").trim() : "", 数量: 0, 件数: 0 };
-        companyStats[c].数量 += o_qty ? toNumber(r[o_qty]) : 0;
-        companyStats[c].件数 += 1;
-      }
-      return { orderBizStats, productStats, companyStats };
+    // 業態別の提供社数・注文社数（同じシートの下に表示する）
+    const bizStats = {};
+    for (const c of providedCompanies) {
+      const t = companyType[c] || "(不明)";
+      if (!bizStats[t]) bizStats[t] = { 提供: 0, 転換: 0 };
+      bizStats[t].提供 += 1;
+      if (companiesConverted.has(c)) bizStats[t].転換 += 1;
     }
 
     setStatus("Excelを生成中...", "");
 
     // ---------------- Excel生成 ----------------
     const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet("サンプルフィードバック");
+    const ws = wb.addWorksheet("サンプル結果");
 
     setCell(ws, 1, 1, `${makerName}様サンプルフィードバック`, { font: { bold: true, size: 18 }, border: false, alignment: { wrapText: false, vertical: "bottom" } });
     setCell(ws, 2, 1, `サンプル提供数：${nProvided}件（商品単位）`, { border: false, alignment: { wrapText: false } });
-    setCell(ws, 3, 1, `注文転換数：${nConverted}件（サンプルと同じ商品が注文された数）`, { border: false, alignment: { wrapText: false } });
+    setCell(ws, 3, 1, `注文転換数：${nConverted}件（サンプル納品後に同じ商品が通常注文された数）`, { border: false, alignment: { wrapText: false } });
     setCell(ws, 4, 1, `注文転換率：${(rate * 100).toFixed(1)}%`, { font: { bold: true, color: { argb: "FFFF0000" } }, border: false, alignment: { wrapText: false } });
-    // 会社単位（そのメーカーの商品を1件でも注文した会社）はE列に並べる
+    // 会社単位（サンプル納品後に同じ商品を通常注文した会社）はE列に並べる
     setCell(ws, 2, 5, `サンプル提供社数：${nCompanies}社（会社単位）`, { border: false, alignment: { wrapText: false } });
-    setCell(ws, 3, 5, `注文転換社数：${nConvertedCo}社（そのメーカーの商品を1件でも注文）`, { border: false, alignment: { wrapText: false } });
+    setCell(ws, 3, 5, `注文転換社数：${nConvertedCo}社（サンプル納品後に同じ商品を通常注文）`, { border: false, alignment: { wrapText: false } });
     setCell(ws, 4, 5, `注文転換率（会社単位）：${(rateCo * 100).toFixed(1)}%`, { font: { bold: true, color: { argb: "FFFF0000" } }, border: false, alignment: { wrapText: false } });
     setCell(ws, 6, 1, periodStr, { border: false, alignment: { wrapText: false } });
     const today = new Date();
-    setCell(ws, 6, 8, `${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()}　なごみや太田`, { border: false, alignment: { wrapText: false, horizontal: "right" } });
+    setCell(ws, 6, 8, `${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()}　なごみや`, { border: false, alignment: { wrapText: false, horizontal: "right" } });
 
     const headers = ["納品日", "業態", "会社名", "配送先都道府県", "商品名", "サンプル用途", "サンプル評価結果", "注文有無"];
     const headerRow = 7;
@@ -584,10 +565,8 @@ async function generate() {
 
       const first = g.rows[0];
       const resultText = o_result ? String(first[o_result] || "").trim() : "";
-      const adoptText = o_adopt ? String(first[o_adopt] || "").trim() : "";
-      let gValue;
-      if (adoptText && resultText) gValue = `評価都合／採用数：${adoptText}\n${resultText}`;
-      else gValue = resultText || adoptText;
+      // 「評価都合／採用数」はメーカーに不要なので表示しない（集計には内部で使う）
+      const gValue = cleanResultText(resultText);
 
       const mergedValues = {
         A: dateDisplay, B: (o_type && first[o_type]) || "", C: g.company, D: (o_pref && first[o_pref]) || "",
@@ -610,8 +589,8 @@ async function generate() {
       products.forEach((p, offset) => {
         const r = startRow + offset;
         setCell(ws, r, 5, p, {});
-        // 注文有無は商品ごと（サンプルと同じ商品が同じ会社から注文されたか）
-        const hasOrder = normalPairs.has(pairKey(g.company, p || ""));
+        // 注文有無は商品ごと（サンプル納品後に同じ商品が同じ会社から通常注文されたか）
+        const hasOrder = convertedPairs.has(pairKey(g.company, p || ""));
         const hopts = { alignment: { vertical: "middle", wrapText: true } };
         if (hasOrder) { hopts.font = { bold: true, color: { argb: "FF375623" } }; hopts.fill = GREEN_FILL; }
         else { hopts.font = { color: { argb: "FF999999" } }; }
@@ -625,169 +604,28 @@ async function generate() {
       ws.getColumn(col).width = width;
     });
 
-    // ---------------- シート2・3で使う共通ヘルパー ----------------
-    function colLetter(n) {
-      // 1-indexed列番号からA1形式の列文字を返す（getCellが数値を受け付けるのでexceljsでは基本不要だが、column_dimensionsはgetColumnで数値も可）
-      return n;
+    // ---------------- 業態別（提供社数・注文社数）: 同じシートの下に置く ----------------
+    let bizRow = rowPtr + 1;
+    setCell(ws, bizRow, 1, "業態別（提供社数・注文社数）", { font: { bold: true }, border: false, alignment: { wrapText: false } });
+    bizRow += 1;
+    const writeBizRow = (r, label, nProv, nConv, header, bold) => {
+      ws.mergeCells(r, 1, r, 2);
+      const font = { bold: !!(header || bold) };
+      setCell(ws, r, 1, label, { font, fill: header ? GREY_FILL : undefined, alignment: { horizontal: header ? "center" : "left", wrapText: true } });
+      // 結合セルの2列目は値を触らず、枠線と背景色だけ付ける（値を設定すると結合元の値が消えるため）
+      const c2 = ws.getCell(r, 2);
+      c2.border = BORDER_ALL;
+      if (header) c2.fill = GREY_FILL;
+      setCell(ws, r, 3, nProv, { font, fill: header ? GREY_FILL : undefined, alignment: { horizontal: "center" } });
+      setCell(ws, r, 4, nConv, { font, fill: header ? GREY_FILL : undefined, alignment: { horizontal: "center" } });
+    };
+    writeBizRow(bizRow, "業態", "提供社数", "注文社数", true, false);
+    bizRow += 1;
+    for (const [biz, st] of Object.entries(bizStats).sort((x, y) => y[1].提供 - x[1].提供)) {
+      writeBizRow(bizRow, biz, st.提供, st.転換, false, false);
+      bizRow += 1;
     }
-    function writeHeaderRow(ws, rowIdx, colOffset, headers) {
-      headers.forEach((h, i) => {
-        setCell(ws, rowIdx, colOffset + i, h, { font: { bold: true }, fill: GREY_FILL, alignment: { horizontal: "center", wrapText: true } });
-      });
-    }
-    function writeDataRow(ws, rowIdx, colOffset, values, pctCols, wrapCols) {
-      pctCols = pctCols || [];
-      wrapCols = wrapCols || [];
-      values.forEach((v, idx) => {
-        const opts = { alignment: { wrapText: wrapCols.includes(idx) } };
-        if (pctCols.includes(idx)) opts.numFmt = "0.0%";
-        setCell(ws, rowIdx, colOffset + idx, v, opts);
-      });
-    }
-    function writeBizTable(ws, startRow, colOffset, bizStats, title) {
-      let r = startRow;
-      if (title) {
-        setCell(ws, r, colOffset, title, { font: { bold: true, size: 13 }, border: false, alignment: { wrapText: false } });
-        r += 1;
-      }
-      writeHeaderRow(ws, r, colOffset, ["業態", "提供数", "転換数", "転換率", "提供社数", "転換社数", "転換率(社)", "OK件数(概算)", "NG件数(概算)", "検討中件数(概算)"]);
-      r += 1;
-      const sortedBiz = Object.entries(bizStats).sort((a, b) => b[1].提供 - a[1].提供);
-      for (const [biz, s] of sortedBiz) {
-        const bizRate = s.提供 ? s.転換 / s.提供 : 0;
-        const bizRateCo = s.社提供 ? s.社転換 / s.社提供 : 0;
-        writeDataRow(ws, r, colOffset, [biz, s.提供, s.転換, bizRate, s.社提供, s.社転換, bizRateCo, s.OK, s.NG, s.検討中], [3, 6]);
-        r += 1;
-      }
-      return r;
-    }
-    function writeOneTable(ws, startRow, colOffset, title, headers, rows, pctCols, wrapCols) {
-      let r = startRow;
-      if (title) {
-        setCell(ws, r, colOffset, title, { font: { bold: true, size: 13 }, border: false, alignment: { wrapText: false } });
-        r += 1;
-      }
-      writeHeaderRow(ws, r, colOffset, headers);
-      r += 1;
-      for (const values of rows) {
-        writeDataRow(ws, r, colOffset, values, pctCols, wrapCols);
-        r += 1;
-      }
-      return r;
-    }
-
-    const BIZ_TABLE_WIDTH = 10;
-    const ORDER_BIZ_WIDTH = 4;
-    const PRODUCT_WIDTH = 3;
-    const COMPANY_WIDTH = 4;
-    const GAP = 1;
-    // シート3は3種類の表が縦に並ぶが、年ブロックの列位置はどの表も揃える必要がある。
-    // 表ごとに列幅設定が異なる列オフセットを上書きし合わないよう、
-    // 3つの表すべてで同じストライド（最大の表幅+GAP）を使う。
-    const ORDER_STRIDE = Math.max(ORDER_BIZ_WIDTH, PRODUCT_WIDTH, COMPANY_WIDTH) + GAP;
-
-    function setRepeatedWidths(ws, baseCol, stride, widths, nBlocks) {
-      for (let b = 0; b < nBlocks; b++) {
-        const colStart = baseCol + b * stride;
-        for (let i = 0; i < stride; i++) {
-          ws.getColumn(colStart + i).width = i < widths.length ? widths[i] : 3;
-        }
-      }
-    }
-
-    // シート2: 業態別分析（複数年は横に並べる）
-    const ws2 = wb.addWorksheet("業態別分析");
-    let r2End = 1;
-    if (sampleYears.length <= 1) {
-      const bizStatsAll = computeBizStats(df);
-      r2End = writeBizTable(ws2, 1, 1, bizStatsAll);
-      setRepeatedWidths(ws2, 1, BIZ_TABLE_WIDTH + GAP, [16, 10, 10, 10, 10, 10, 11, 12, 12, 14], 1);
-    } else {
-      let col = 1;
-      for (const y of sampleYears) {
-        const dfYear = df.filter(r => r.__year === y);
-        const bizStatsYear = computeBizStats(dfYear);
-        const endRow = writeBizTable(ws2, 1, col, bizStatsYear, `${y}年`);
-        r2End = Math.max(r2End, endRow);
-        col += BIZ_TABLE_WIDTH + GAP;
-      }
-      setRepeatedWidths(ws2, 1, BIZ_TABLE_WIDTH + GAP, [16, 10, 10, 10, 10, 10, 11, 12, 12, 14], sampleYears.length);
-    }
-    setCell(ws2, r2End + 1, 1, "※OK/NG/検討中件数は評価コメント内の文字列を数えた概算値です（1コメントに複数商品分の評価が含まれる場合があります）", { font: { size: 9, italic: true }, border: false, alignment: { wrapText: false } });
-
-    // シート3: 受注データ分析（複数年は3つの表それぞれを横に並べる）
-    const ws3 = wb.addWorksheet("受注データ分析");
-    const yearsForOrder = orderYears.length > 1 ? orderYears : [null];
-
-    function orderStatsRows(orderBizStats, productStats, companyStats) {
-      const bizRows = Object.entries(orderBizStats).sort((a, b) => b[1].件数 - a[1].件数)
-        .map(([biz, s]) => [biz, s.companies.size, s.件数, s.数量]);
-      const productRows = Object.entries(productStats).sort((a, b) => b[1].数量 - a[1].数量).slice(0, 10)
-        .map(([product, s]) => [stripMakerCode(product), s.数量, s.companies.size]);
-      const companyRows = Object.entries(companyStats).sort((a, b) => b[1].数量 - a[1].数量).slice(0, 10)
-        .map(([company, s]) => [company, s.業態, s.数量, s.件数]);
-      return { bizRows, productRows, companyRows };
-    }
-
-    let rowCursor = 1;
-    // 表1: 業態別受注動向（年ごとに横並び）
-    {
-      let col = 1;
-      let sectionEnd = rowCursor;
-      for (const y of yearsForOrder) {
-        const normalRowsY = y === null ? normalRows : normalRows.filter(r => r.__year === y);
-        const { orderBizStats, productStats, companyStats } = computeOrderStats(normalRowsY);
-        const { bizRows } = orderStatsRows(orderBizStats, productStats, companyStats);
-        const title = y === null ? "業態別 受注動向（通常注文ベース）" : `${y}年 業態別受注動向`;
-        const endRow = writeOneTable(ws3, rowCursor, col, title, ["業態", "受注社数", "受注件数", "受注数量合計"], bizRows);
-        sectionEnd = Math.max(sectionEnd, endRow);
-        col += ORDER_STRIDE;
-      }
-      rowCursor = sectionEnd + 2;
-    }
-
-    // 表2: 商品別ランキング（年ごとに横並び）
-    {
-      let col = 1;
-      let sectionEnd = rowCursor;
-      for (const y of yearsForOrder) {
-        const normalRowsY = y === null ? normalRows : normalRows.filter(r => r.__year === y);
-        const { orderBizStats, productStats, companyStats } = computeOrderStats(normalRowsY);
-        const { productRows } = orderStatsRows(orderBizStats, productStats, companyStats);
-        const title = y === null ? "商品別ランキング（通常注文・数量順、上位10件）" : `${y}年 商品別ランキング（上位10件）`;
-        const endRow = writeOneTable(ws3, rowCursor, col, title, ["商品名", "受注数量合計", "購入社数"], productRows);
-        sectionEnd = Math.max(sectionEnd, endRow);
-        col += ORDER_STRIDE;
-      }
-      rowCursor = sectionEnd + 2;
-    }
-
-    // 表3: 会社別ランキング（年ごとに横並び）
-    {
-      let col = 1;
-      let sectionEnd = rowCursor;
-      for (const y of yearsForOrder) {
-        const normalRowsY = y === null ? normalRows : normalRows.filter(r => r.__year === y);
-        const { orderBizStats, productStats, companyStats } = computeOrderStats(normalRowsY);
-        const { companyRows } = orderStatsRows(orderBizStats, productStats, companyStats);
-        const title = y === null ? "会社別ランキング（通常注文・数量順、上位10社）" : `${y}年 会社別ランキング（上位10社）`;
-        const endRow = writeOneTable(ws3, rowCursor, col, title, ["会社名", "業態", "受注数量合計", "受注件数"], companyRows);
-        sectionEnd = Math.max(sectionEnd, endRow);
-        col += ORDER_STRIDE;
-      }
-      rowCursor = sectionEnd;
-    }
-
-    // 3つの表は同じ列位置を共有するため、列幅は各表の必要幅の最大値で1回だけ設定する
-    const combinedWidths = [
-      Math.max(22, 46, 26),
-      Math.max(12, 14, 16),
-      Math.max(12, 12, 14),
-      14,
-    ];
-    setRepeatedWidths(ws3, 1, ORDER_STRIDE, combinedWidths, yearsForOrder.length);
-
-    setCell(ws3, rowCursor + 1, 1, "※このシートはサンプル注文を除いた「通常注文」のみを集計しています（金額は含めていません）", { font: { size: 9, italic: true }, border: false, alignment: { wrapText: false } });
+    writeBizRow(bizRow, "合計", nCompanies, nConvertedCo, false, true);
 
     const buffer = await wb.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
