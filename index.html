@@ -627,6 +627,20 @@ async function generate() {
     }
     writeBizRow(bizRow, "合計", nCompanies, nConvertedCo, false, true);
 
+    // ---------------- 印刷設定: A4横・1ページ幅に収める・印刷範囲はA1〜H最終行 ----------------
+    ws.pageSetup = {
+      paperSize: 9,              // A4
+      orientation: "landscape",  // 横
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 0,            // 縦は自動（複数ページ可）
+      horizontalCentered: true,
+      printArea: `A1:H${bizRow}`,
+      printTitlesRow: `${headerRow}:${headerRow}`,  // 2ページ目以降もヘッダー行を繰り返す
+      margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.6, header: 0.3, footer: 0.3 },
+    };
+    ws.headerFooter.oddFooter = "&C&P / &N";
+
     const buffer = await wb.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
