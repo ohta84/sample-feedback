@@ -23,6 +23,8 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.properties import PageSetupProperties
+from openpyxl.worksheet.page import PageMargins
 
 MAKER_CODES_CSV = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "maker_codes.csv")
 
@@ -466,6 +468,18 @@ def main():
         biz_row(r, biz, st["提供"], st["転換"])
         r += 1
     biz_row(r, "合計", n_companies, n_converted_co, bold=True)
+
+    # ---------------- 印刷設定: A4横・1ページ幅に収める・印刷範囲はA1〜H最終行 ----------------
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0  # 縦は自動（複数ページ可）
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.print_area = f"A1:H{r}"
+    ws.print_title_rows = f"{header_row}:{header_row}"  # 2ページ目以降もヘッダー行を繰り返す
+    ws.page_margins = PageMargins(left=0.4, right=0.4, top=0.5, bottom=0.6, header=0.3, footer=0.3)
+    ws.print_options.horizontalCentered = True
+    ws.oddFooter.center.text = "&P / &N"
 
     wb.save(args.output)
     print(f"OK: {args.output} (提供数={n_provided}件, 転換数={n_converted}件, 転換率={rate*100:.1f}% / 会社単位 {n_converted_co}/{n_companies}社 {rate_co*100:.1f}%)")
