@@ -16,6 +16,7 @@ Bカート受注CSV(1本) -> メーカー別サンプルフィードバックExc
 import argparse
 import os
 import re
+import unicodedata
 import sys
 from datetime import datetime
 
@@ -61,7 +62,7 @@ BORDER_ALL = Border(left=THIN_GREY, right=THIN_GREY, top=THIN_GREY, bottom=THIN_
 
 COLUMN_WIDTHS = {
     "A": 14.6, "B": 15.1, "C": 31.6, "D": 11.9,
-    "E": 37.0, "F": 35.2, "G": 71.4, "H": 14.0,
+    "E": 37.0, "F": 35.2, "G": 8.0, "H": 71.4, "I": 14.0,
 }
 
 
@@ -197,6 +198,59 @@ def classify_evaluation(text, adopt_raw, n_products):
     return (0, 0, 1)
 
 
+# ---------------- 商品ごとの評価マーク（○採用 ×不採用 △検討中） ----------------
+MARK_OK, MARK_NG, MARK_REVIEW = "○", "×", "△"
+YELLOW_FILL = PatternFill("solid", start_color="FFFF99", end_color="FFFF99")
+
+
+def normalize_product_name(name):
+    name = unicodedata.normalize("NFKC", strip_maker_code(name))
+    return re.sub(r"\s+", "", name)
+
+
+def mark_from_text(text):
+    """文章から ○/×/△ のどれか1つに決まれば返す。決まらない（空・複数混在）ときは None"""
+    if not str(text).strip():
+        return None
+    ok, ng, rev = classify_evaluation(text, "", 1)
+    kinds = [m for n, m in ((ok, MARK_OK), (ng, MARK_NG), (rev, MARK_REVIEW)) if n]
+    return kinds[0] if len(kinds) == 1 else None
+
+
+def judge_marks(text, adopt_raw, products):
+    """1つの受注について、商品ごとの (マーク, 要確認フラグ) のリストを返す。
+    1. 評価に「【商品名】…」の形があれば、その商品ごとにその文章から判定する
+    2. 受注内の評価が1種類（OKのみ／NGのみ／検討中のみ）なら、全商品に同じマークを付ける
+    3. 混在などで商品を特定できない場合はマークなし・要確認（黄色）
+    評価が空、または「未回収」のときはマークなし（要確認にもしない）"""
+    n = len(products)
+    body = clean_result_text(text)
+    adopt_ok = bool(adopt_raw) and "/" not in adopt_raw and adopt_raw.strip().isdigit()
+    if (not body and not adopt_ok) or body == "未回収":
+        return [("", False)] * n
+
+    parts = re.split(r"【([^】]+)】", body.replace("\r\n", "\n"))
+    if len(parts) >= 3:
+        marks = [None] * n
+        matched = False
+        for i in range(1, len(parts) - 1, 2):
+            bname, btext = normalize_product_name(parts[i]), parts[i + 1]
+            m = mark_from_text(btext)
+            for k, prod in enumerate(products):
+                pn = normalize_product_name(prod)
+                if bname and pn and (bname == pn or bname in pn or pn in bname):
+                    matched = True
+                    marks[k] = m
+        if matched:
+            return [(m or "", m is None) for m in marks]
+
+    ok, ng, rev = classify_evaluation(body, adopt_raw if adopt_ok else "", n)
+    kinds = [m for c, m in ((ok, MARK_OK), (ng, MARK_NG), (rev, MARK_REVIEW)) if c]
+    if len(kinds) == 1:
+        return [(kinds[0], False)] * n
+    return [("", True)] * n
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--order-csv", required=True, nargs="+",
@@ -293,6 +347,19 @@ def main():
     df["_date_parsed"] = df[o_date].apply(parse_date)
 
     df["_product"] = df[o_product].astype(str).str.strip()
+
+    # 商品ごとの評価マーク（受注番号ごとに評価文を見て、商品行ごとに ○×△ を決める）
+    df = df.reset_index(drop=True)
+    df["_mark"] = ""
+    df["_mark_unknown"] = False
+    for _, idx in df.groupby(o_orderno, sort=False).groups.items():
+        rows = df.loc[list(idx)]
+        first_row = rows.iloc[0]
+        text_ = str(first_row[o_result]) if o_result else ""
+        adopt_ = str(first_row[o_adopt]).strip() if o_adopt else ""
+        for (m_, u_), i_ in zip(judge_marks(text_, adopt_, list(rows[o_product])), list(idx)):
+            df.at[i_, "_mark"] = m_
+            df.at[i_, "_mark_unknown"] = u_
     df["_pair"] = list(zip(df["_company"], df["_product"]))
     provided_companies = sorted(set(df["_company"]))
     n_companies = len(provided_companies)
@@ -363,12 +430,15 @@ def main():
     set_row_e(4, f"注文転換率（会社単位）：{rate_co*100:.1f}%", bold=True, color="FF0000")
 
     set_row(6, period_str)
+    legend = ws.cell(row=6, column=7, value="評価：○採用　×不採用　△検討中")
+    legend.font = Font(name=FONT_NAME, size=10)
+    legend.alignment = Alignment(vertical="center", wrap_text=False)
     today = datetime.now()
-    updater_cell = ws.cell(row=6, column=8, value=f"{today.year}/{today.month}/{today.day}　なごみや")
+    updater_cell = ws.cell(row=6, column=9, value=f"{today.year}/{today.month}/{today.day}　なごみや")
     updater_cell.font = Font(name=FONT_NAME, size=11)
     updater_cell.alignment = Alignment(vertical="center", wrap_text=False, horizontal="right")
 
-    headers = ["納品日", "業態", "会社名", "配送先都道府県", "商品名", "サンプル用途", "サンプル評価結果", "注文有無"]
+    headers = ["納品日", "業態", "会社名", "配送先都道府県", "商品名", "サンプル用途", "評価", "サンプル評価結果", "注文有無"]
     header_row = 7
     for i, h in enumerate(headers, start=1):
         c = ws.cell(row=header_row, column=i, value=h)
@@ -398,11 +468,11 @@ def main():
             "C": company,
             "D": first.get(o_pref, ""),
             "F": str(first[o_usage]).strip() if o_usage else "",
-            "G": g_value,
+            "H": g_value,
         }
 
         for col_letter, value in merged_values.items():
-            col_idx = "ABCDEFGH".index(col_letter) + 1
+            col_idx = "ABCDEFGHI".index(col_letter) + 1
             cell = ws.cell(row=start_row, column=col_idx, value=value)
             cell.font = Font(name=FONT_NAME, size=11,
                               bold=False)
@@ -420,9 +490,18 @@ def main():
             cell.alignment = Alignment(vertical="center", wrap_text=True)
             cell.border = BORDER_ALL
 
+            # 評価マーク（商品ごと）。特定できない場合は空欄＋黄色（担当者が確認して入力する）
+            mrow = g.iloc[offset]
+            mcell = ws.cell(row=r, column=7, value=mrow["_mark"] or None)
+            mcell.font = Font(name=FONT_NAME, size=14, bold=True)
+            mcell.alignment = Alignment(horizontal="center", vertical="center")
+            mcell.border = BORDER_ALL
+            if mrow["_mark_unknown"]:
+                mcell.fill = YELLOW_FILL
+
             # 注文有無は商品ごと（サンプルと同じ商品が同じ会社から注文されたか）
             has_order = (company, str(product).strip()) in converted_pairs
-            hcell = ws.cell(row=r, column=8, value="✅ 注文あり" if has_order else "－ なし")
+            hcell = ws.cell(row=r, column=9, value="✅ 注文あり" if has_order else "－ なし")
             hcell.font = Font(name=FONT_NAME, size=11, bold=has_order,
                               color=("375623" if has_order else "999999"))
             if has_order:
@@ -475,7 +554,7 @@ def main():
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0  # 縦は自動（複数ページ可）
     ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
-    ws.print_area = f"A1:H{r}"
+    ws.print_area = f"A1:I{r}"
     ws.print_title_rows = f"{header_row}:{header_row}"  # 2ページ目以降もヘッダー行を繰り返す
     ws.page_margins = PageMargins(left=0.4, right=0.4, top=0.5, bottom=0.6, header=0.3, footer=0.3)
     ws.print_options.horizontalCentered = True
