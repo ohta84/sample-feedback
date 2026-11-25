@@ -135,10 +135,11 @@ const HEADER_KEYWORDS = {
 
 const FONT_NAME = "Arial";
 const GREY_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9D9D9" } };
+const YELLOW_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF99" } };
 const GREEN_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2EFDA" } };
 const THIN_GREY = { style: "thin", color: { argb: "FFBFBFBF" } };
 const BORDER_ALL = { top: THIN_GREY, bottom: THIN_GREY, left: THIN_GREY, right: THIN_GREY };
-const COLUMN_WIDTHS = { A: 14.6, B: 15.1, C: 31.6, D: 11.9, E: 37.0, F: 35.2, G: 71.4, H: 14.0 };
+const COLUMN_WIDTHS = { A: 14.6, B: 15.1, C: 31.6, D: 11.9, E: 37.0, F: 35.2, G: 8.0, H: 71.4, I: 14.0 };
 
 const CORP_PREFIXES = ["株式会社", "有限会社", "合同会社", "（株）", "(株)", "（有）", "(有)"];
 
@@ -217,6 +218,55 @@ function cleanResultText(text) {
       && UNCOLLECTED_HINTS.some(h => t.includes(h))
       && !EVALUATION_WORDS.some(w => t.includes(w))) return "未回収";
   return t;
+}
+
+// ---------------- 商品ごとの評価マーク（○採用 ×不採用 △検討中） ----------------
+const MARK_OK = "○", MARK_NG = "×", MARK_REVIEW = "△";
+
+function normalizeProductName(name) {
+  return stripMakerCode(String(name || "")).normalize("NFKC").replace(/\s+/g, "");
+}
+
+// 文章から ○/×/△ のどれか1つに決まれば返す。決まらない（空・複数混在）ときは null
+function markFromText(text) {
+  if (!String(text || "").trim()) return null;
+  const [ok, ng, rev] = classifyEvaluation(text, "", 1);
+  const kinds = [[ok, MARK_OK], [ng, MARK_NG], [rev, MARK_REVIEW]].filter(x => x[0]).map(x => x[1]);
+  return kinds.length === 1 ? kinds[0] : null;
+}
+
+// 1つの受注について、商品ごとの {mark, unknown} の配列を返す。
+// 1. 評価に「【商品名】…」の形があれば、その商品ごとにその文章から判定する
+// 2. 受注内の評価が1種類（OKのみ／NGのみ／検討中のみ）なら、全商品に同じマークを付ける
+// 3. 混在などで商品を特定できない場合はマークなし・要確認（黄色）
+// 評価が空、または「未回収」のときはマークなし（要確認にもしない）
+function judgeMarks(text, adoptRaw, products) {
+  const n = products.length;
+  const body = cleanResultText(text);
+  const adoptStr = String(adoptRaw || "").trim();
+  const adoptOk = adoptStr && !adoptStr.includes("/") && /^\d+$/.test(adoptStr);
+  const blank = () => Array.from({ length: n }, () => ({ mark: "", unknown: false }));
+  if ((!body && !adoptOk) || body === "未回収") return blank();
+
+  const parts = body.replace(/\r\n/g, "\n").split(/【([^】]+)】/);
+  if (parts.length >= 3) {
+    const marks = new Array(n).fill(null);
+    let matched = false;
+    for (let i = 1; i < parts.length - 1; i += 2) {
+      const bname = normalizeProductName(parts[i]);
+      const m = markFromText(parts[i + 1]);
+      products.forEach((prod, k) => {
+        const pn = normalizeProductName(prod);
+        if (bname && pn && (bname === pn || bname.includes(pn) || pn.includes(bname))) { matched = true; marks[k] = m; }
+      });
+    }
+    if (matched) return marks.map(m => ({ mark: m || "", unknown: m === null }));
+  }
+
+  const [ok, ng, rev] = classifyEvaluation(body, adoptOk ? adoptStr : "", n);
+  const kinds = [[ok, MARK_OK], [ng, MARK_NG], [rev, MARK_REVIEW]].filter(x => x[0]).map(x => x[1]);
+  if (kinds.length === 1) return Array.from({ length: n }, () => ({ mark: kinds[0], unknown: false }));
+  return Array.from({ length: n }, () => ({ mark: "", unknown: true }));
 }
 
 function formatDateJP(d) {
@@ -436,6 +486,20 @@ async function generate() {
       __dateParsed: o_date ? parseDateJP(r[o_date]) : null,
     }));
 
+    // 商品ごとの評価マーク（受注番号ごとに評価文を見て、商品行ごとに ○×△ を決める）
+    const byOrder = new Map();
+    df.forEach(r => {
+      const k = String(r[o_orderno] || "");
+      if (!byOrder.has(k)) byOrder.set(k, []);
+      byOrder.get(k).push(r);
+    });
+    for (const rows of byOrder.values()) {
+      const res = judgeMarks(o_result ? String(rows[0][o_result] || "") : "",
+                             o_adopt ? String(rows[0][o_adopt] || "") : "",
+                             rows.map(r => r[o_product]));
+      rows.forEach((r, i) => { r.__mark = res[i].mark; r.__markUnknown = res[i].unknown; });
+    }
+
     if (df.length === 0) {
       throw new Error("サンプル注文（セット名に「サンプル」を含む行）が見つかりませんでした。");
     }
@@ -544,10 +608,11 @@ async function generate() {
     setCell(ws, 3, 5, `注文転換社数：${nConvertedCo}社（サンプル納品後に同じ商品を通常注文）`, { border: false, alignment: { wrapText: false } });
     setCell(ws, 4, 5, `注文転換率（会社単位）：${(rateCo * 100).toFixed(1)}%`, { font: { bold: true, color: { argb: "FFFF0000" } }, border: false, alignment: { wrapText: false } });
     setCell(ws, 6, 1, periodStr, { border: false, alignment: { wrapText: false } });
+    setCell(ws, 6, 7, "評価：○採用　×不採用　△検討中", { font: { size: 10 }, border: false, alignment: { wrapText: false, horizontal: "left" } });
     const today = new Date();
-    setCell(ws, 6, 8, `${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()}　なごみや`, { border: false, alignment: { wrapText: false, horizontal: "right" } });
+    setCell(ws, 6, 9, `${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()}　なごみや`, { border: false, alignment: { wrapText: false, horizontal: "right" } });
 
-    const headers = ["納品日", "業態", "会社名", "配送先都道府県", "商品名", "サンプル用途", "サンプル評価結果", "注文有無"];
+    const headers = ["納品日", "業態", "会社名", "配送先都道府県", "商品名", "サンプル用途", "評価", "サンプル評価結果", "注文有無"];
     const headerRow = 7;
     headers.forEach((h, i) => {
       setCell(ws, headerRow, i + 1, h, { font: { bold: true }, fill: GREY_FILL, alignment: { horizontal: "center", wrapText: true } });
@@ -570,10 +635,10 @@ async function generate() {
 
       const mergedValues = {
         A: dateDisplay, B: (o_type && first[o_type]) || "", C: g.company, D: (o_pref && first[o_pref]) || "",
-        F: o_usage ? String(first[o_usage] || "").trim() : "", G: gValue,
+        F: o_usage ? String(first[o_usage] || "").trim() : "", H: gValue,
       };
 
-      const colIndexOf = { A: 1, B: 2, C: 3, D: 4, F: 6, G: 7, H: 8 };
+      const colIndexOf = { A: 1, B: 2, C: 3, D: 4, F: 6, H: 8 };
       for (const [letter, value] of Object.entries(mergedValues)) {
         const colIdx = colIndexOf[letter];
         const opts = { alignment: { vertical: "middle", wrapText: true } };
@@ -589,12 +654,18 @@ async function generate() {
       products.forEach((p, offset) => {
         const r = startRow + offset;
         setCell(ws, r, 5, p, {});
+        // 評価マーク（商品ごと）。特定できない場合は空欄＋黄色（担当者が確認して入力する）
+        const mrow = g.rows[offset];
+        setCell(ws, r, 7, mrow.__mark || null, {
+          font: { bold: true, size: 14 }, alignment: { horizontal: "center", vertical: "middle", wrapText: false },
+          fill: mrow.__markUnknown ? YELLOW_FILL : undefined,
+        });
         // 注文有無は商品ごと（サンプル納品後に同じ商品が同じ会社から通常注文されたか）
         const hasOrder = convertedPairs.has(pairKey(g.company, p || ""));
         const hopts = { alignment: { vertical: "middle", wrapText: true } };
         if (hasOrder) { hopts.font = { bold: true, color: { argb: "FF375623" } }; hopts.fill = GREEN_FILL; }
         else { hopts.font = { color: { argb: "FF999999" } }; }
-        setCell(ws, r, 8, hasOrder ? "✅ 注文あり" : "－ なし", hopts);
+        setCell(ws, r, 9, hasOrder ? "✅ 注文あり" : "－ なし", hopts);
       });
 
       rowPtr = endRow + 1;
@@ -635,7 +706,7 @@ async function generate() {
       fitToWidth: 1,
       fitToHeight: 0,            // 縦は自動（複数ページ可）
       horizontalCentered: true,
-      printArea: `A1:H${bizRow}`,
+      printArea: `A1:I${bizRow}`,
       printTitlesRow: `${headerRow}:${headerRow}`,  // 2ページ目以降もヘッダー行を繰り返す
       margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.6, header: 0.3, footer: 0.3 },
     };
